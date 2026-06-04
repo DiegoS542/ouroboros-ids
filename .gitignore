@@ -1,0 +1,16 @@
+# Credenciales
+.env
+
+# Entorno virtual
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Base de datos local
+data/ouroboros.db
+
+# Sistema
+.DS_Store
