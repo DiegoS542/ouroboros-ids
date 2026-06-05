@@ -1,0 +1,14 @@
+{
+  "dispositivos": [
+    {
+      "nombre": "Laptop Diego",
+      "ip": "192.168.1.100",
+      "mac": "AA:BB:CC:DD:EE:FF"
+    },
+    {
+      "nombre": "Router",
+      "ip": "192.168.1.1",
+      "mac": "11:22:33:44:55:66"
+    }
+  ]
+}

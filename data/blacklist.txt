@@ -1,0 +1,14 @@
+# Ouroboros IDS — Lista negra de IPs peligrosas
+# Formato: una IP por línea, líneas con # son comentarios
+
+# Tor Exit Nodes / Botnets conocidas
+185.220.101.45
+185.220.101.46
+185.220.101.47
+193.32.162.157
+194.165.16.11
+
+# Malware / C2 Servers
+91.92.109.196
+45.142.212.100
+5.188.86.172
