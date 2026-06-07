@@ -1,157 +1,254 @@
 """
 core/sniffer.py
 Ouroboros IDS — Módulo de captura de paquetes
-Corazón del sistema. Escucha tráfico en tiempo real con Scapy
-y coordina la detección con whitelist, blacklist y base de datos.
+Corazón del sistema. Escucha tráfico en tiempo real con Scapy,
+procesa ARP para whitelist dinámica, y coordina detección con blacklist.
 """
 
 import threading
-from scapy.all import sniff, ARP
+import netifaces
+from scapy.all import sniff, ARP, Ether, srp
 from scapy.layers.inet import IP
 from scapy.layers.dns import DNS, DNSQR
 
-from core.whitelist import cargar_whitelist, es_autorizado
 from core.blacklist import cargar_blacklist, es_peligrosa
 from core.db_writer import (
     init_db,
+    registrar_dispositivo,
+    registrar_y_autorizar,
+    autorizar_por_ip,
+    es_autorizado,
     registrar_alerta_whitelist,
     registrar_dns,
     registrar_alerta_blacklist
 )
 
 
+def obtener_rango_red(interfaz):
+    """
+    Detecta automáticamente el rango de red de la interfaz dada.
+    Retorna el rango en formato CIDR, ej: '192.168.1.0/24'
+    """
+    addrs = netifaces.ifaddresses(interfaz)
+
+    if netifaces.AF_INET not in addrs:
+        raise RuntimeError(f"[Ouroboros] La interfaz {interfaz} no tiene dirección IPv4.")
+
+    ip      = addrs[netifaces.AF_INET][0]['addr']
+    mascara = addrs[netifaces.AF_INET][0]['netmask']
+
+    # Convertir máscara a prefijo CIDR — ej: 255.255.255.0 → 24
+    prefijo = sum(bin(int(x)).count('1') for x in mascara.split('.'))
+
+    # Calcular dirección de red — ej: 192.168.1.65 + /24 → 192.168.1.0/24
+    ip_partes   = [int(x) for x in ip.split('.')]
+    mask_partes = [int(x) for x in mascara.split('.')]
+    red_partes  = [ip_partes[i] & mask_partes[i] for i in range(4)]
+    red         = '.'.join(str(x) for x in red_partes)
+
+    return f"{red}/{prefijo}"
+
+
+def obtener_ip_mac_propias(interfaz):
+    """
+    Retorna la IP y MAC de la propia máquina en la interfaz dada.
+    Se usa al arrancar para autorizar la máquina que corre Ouroboros.
+    """
+    addrs = netifaces.ifaddresses(interfaz)
+    ip    = addrs[netifaces.AF_INET][0]['addr']
+    mac   = addrs[netifaces.AF_LINK][0]['addr']
+    return ip, mac
+
+
+def obtener_gateway():
+    """
+    Retorna la IP del gateway de la red (el router).
+    Se usa al arrancar para autorizarlo automáticamente.
+    """
+    gateways = netifaces.gateways()
+    if 'default' in gateways and netifaces.AF_INET in gateways['default']:
+        return gateways['default'][netifaces.AF_INET][0]
+    return None
+
+
 class OuroborosSniffer:
     """
     Clase principal del sniffer.
-    Encapsula el estado del sistema — listas cargadas, interfaz, hilo de captura.
+    Encapsula estado del sistema — blacklist, interfaz, cooldowns, hilo de captura.
     """
 
     def __init__(self, interfaz):
-        """
-        interfaz — nombre de tu interfaz de red (ej. 'wlan0', 'eth0')
-        Se carga al arrancar y se mantiene en memoria durante toda la sesión.
-        """
         self.interfaz = interfaz
 
         # Inicializar base de datos
         init_db()
 
-        # Cargar listas en memoria — se leen una vez al arrancar
-        # Si quieres recargarlas sin reiniciar el sistema, llama a recargar_listas()
-        self.ips_autorizadas, self.macs_autorizadas = cargar_whitelist()
+        # Cargar blacklist en memoria
         self.ips_peligrosas = cargar_blacklist()
 
-        # Cola de alertas pendientes para el módulo de correo (Jaime)
-        # El alert_worker de services/ monitorea esta cola
+        # Cooldown por MAC — evita spam de alertas del mismo dispositivo
+        # Estructura: { mac: timestamp_ultima_alerta }
+        self._cooldowns    = {}
+        self._cooldown_seg = 60
+        self._lock         = threading.Lock()
+
+        # Cola de alertas para el alert_worker de Jaime
         self.alertas_pendientes = []
-        self._lock = threading.Lock()
 
         print(f"[Ouroboros] Sniffer listo en interfaz: {self.interfaz}")
 
-    # ── Métodos de recarga en caliente ──────────────────────────────────────
+    # ── ARP scan activo ──────────────────────────────────────────────────────
 
-    def recargar_listas(self):
+    def arp_scan(self):
         """
-        Recarga whitelist y blacklist sin detener el sniffer.
-        Útil cuando el admin agrega un dispositivo desde el dashboard.
+        Manda ARP requests a toda la red para descubrir dispositivos activos.
+        Se ejecuta una vez al arrancar antes de iniciar el monitoreo pasivo.
+        Después del scan autoriza automáticamente el gateway y la propia máquina.
         """
-        self.ips_autorizadas, self.macs_autorizadas = cargar_whitelist()
-        self.ips_peligrosas = cargar_blacklist()
-        print("[Ouroboros] Listas recargadas en caliente.")
+        try:
+            rango = obtener_rango_red(self.interfaz)
+            print(f"[Ouroboros] ARP scan iniciado en {rango}...")
+
+            paquete = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=rango)
+            respondidos, _ = srp(paquete, iface=self.interfaz, timeout=2, verbose=0)
+
+            nuevos = 0
+            for _, respuesta in respondidos:
+                ip  = respuesta[ARP].psrc
+                mac = respuesta[ARP].hwsrc
+
+                es_nuevo = registrar_dispositivo(ip, mac)
+                if es_nuevo:
+                    nuevos += 1
+                    print(f"[ARP SCAN] Dispositivo nuevo: {ip} / {mac} — pendiente autorización")
+                else:
+                    print(f"[ARP SCAN] Dispositivo conocido: {ip} / {mac}")
+
+            print(f"[Ouroboros] ARP scan completo — {len(respondidos)} dispositivos, {nuevos} nuevos.")
+
+            # ── Autorizar gateway automáticamente ────────────────────────────
+            # El router siempre es infraestructura legítima de la red
+            gateway_ip = obtener_gateway()
+            if gateway_ip:
+                autorizar_por_ip(gateway_ip)
+                print(f"[Ouroboros] Gateway autorizado automáticamente: {gateway_ip}")
+
+            # ── Autorizar propia máquina ─────────────────────────────────────
+            # La máquina que corre Ouroboros no aparece en su propio ARP scan
+            ip_propia, mac_propia = obtener_ip_mac_propias(self.interfaz)
+            registrar_y_autorizar(ip_propia, mac_propia)
+            print(f"[Ouroboros] Máquina local autorizada: {ip_propia} / {mac_propia}")
+
+        except Exception as e:
+            print(f"[Ouroboros] Error en ARP scan: {e}")
+
+    # ── Cooldown por MAC ─────────────────────────────────────────────────────
+
+    def _en_cooldown(self, mac):
+        """
+        Verifica si una MAC está en periodo de cooldown.
+        Evita que el mismo dispositivo genere cientos de alertas por minuto.
+        Retorna True si debe ignorarse, False si puede alertar.
+        """
+        from datetime import datetime
+        ahora = datetime.now().timestamp()
+
+        with self._lock:
+            if mac in self._cooldowns:
+                if ahora - self._cooldowns[mac] < self._cooldown_seg:
+                    return True  # En cooldown, ignorar
+            self._cooldowns[mac] = ahora
+            return False  # Fuera de cooldown, puede alertar
 
     # ── Callback principal ───────────────────────────────────────────────────
 
     def procesar_paquete(self, paquete):
         """
         Se ejecuta automáticamente por cada paquete que captura Scapy.
-        Este es el corazón del IDS — aquí vive toda la lógica de detección.
+        Procesa ARP, DNS e IP en ese orden.
         """
 
-        # ── Módulo DNS — bitácora de sitios visitados ────────────────────────
-        # Si el paquete es una consulta DNS (alguien abriendo un sitio web)
-        # extraemos el dominio y lo registramos en la bitácora
+        # ── Capa ARP — whitelist dinámica ────────────────────────────────────
+        if paquete.haslayer(ARP):
+            ip  = paquete[ARP].psrc
+            mac = paquete[ARP].hwsrc
+
+            if ip and mac and mac != "ff:ff:ff:ff:ff:ff":
+                es_nuevo = registrar_dispositivo(ip, mac)
+
+                if es_nuevo:
+                    print(f"[ARP] Dispositivo nuevo detectado: {ip} / {mac}")
+                    with self._lock:
+                        self.alertas_pendientes.append({
+                            "tipo": "DISPOSITIVO_NUEVO",
+                            "ip":   ip,
+                            "mac":  mac
+                        })
+
+        # ── Capa DNS — bitácora de sitios visitados ──────────────────────────
         if paquete.haslayer(DNS) and paquete.haslayer(DNSQR):
-            # DNSQR es la subcapa de "pregunta" DNS
-            # qname contiene el dominio consultado, ej: b'youtube.com.'
             dominio = paquete[DNSQR].qname.decode(errors="ignore").rstrip(".")
 
-            # Solo registramos si el paquete también tiene capa IP
-            # (para saber quién hizo la consulta)
             if paquete.haslayer(IP):
                 ip_origen = paquete[IP].src
                 registrar_dns(ip_origen, dominio)
                 print(f"[DNS] {ip_origen} → {dominio}")
 
-        # ── Módulo IP — whitelist y blacklist ────────────────────────────────
-        # Si el paquete tiene capa IP podemos ver origen y destino
+        # ── Capa IP — validación whitelist y blacklist ───────────────────────
         if paquete.haslayer(IP):
             ip_origen  = paquete[IP].src
             ip_destino = paquete[IP].dst
-
-            # Extraer MAC origen de la capa Ethernet
-            # Si no tiene capa Ethernet (paquete tunelizado) usamos "UNKNOWN"
             mac_origen = paquete.src if hasattr(paquete, "src") else "UNKNOWN"
 
-            # ── Validación whitelist ─────────────────────────────────────────
-            # ¿Este dispositivo está autorizado en la red?
-            if not es_autorizado(ip_origen, mac_origen,
-                                  self.ips_autorizadas, self.macs_autorizadas):
+            # ── Validación whitelist — cooldown por MAC ──────────────────────
+            if not es_autorizado(ip_origen, mac_origen):
+                if not self._en_cooldown(mac_origen):
+                    detalle = f"Tráfico hacia {ip_destino}"
+                    registrar_alerta_whitelist(ip_origen, mac_origen, detalle)
 
-                detalle = f"Tráfico hacia {ip_destino}"
-                registrar_alerta_whitelist(ip_origen, mac_origen, detalle)
+                    with self._lock:
+                        self.alertas_pendientes.append({
+                            "tipo":    "WHITELIST",
+                            "ip":      ip_origen,
+                            "mac":     mac_origen,
+                            "detalle": detalle
+                        })
 
-                # Encolar alerta para que el mailer de Jaime la procese
-                with self._lock:
-                    self.alertas_pendientes.append({
-                        "tipo":   "WHITELIST",
-                        "ip":     ip_origen,
-                        "mac":    mac_origen,
-                        "detalle": detalle
-                    })
-
-                print(f"[ALERTA] Dispositivo no autorizado: {ip_origen} / {mac_origen}")
+                    print(f"[ALERTA] Dispositivo no autorizado: {ip_origen} / {mac_origen}")
 
             # ── Validación blacklist ─────────────────────────────────────────
-            # ¿El destino es una IP peligrosa?
             if es_peligrosa(ip_destino, self.ips_peligrosas):
-
                 registrar_alerta_blacklist(
                     ip_origen    = ip_origen,
                     mac_origen   = mac_origen,
                     ip_peligrosa = ip_destino
-                    # tipo_riesgo, score, ISP, correo_abuso
-                    # los completa abuse_api.py de Jaime después
                 )
 
-                # Encolar alerta de emergencia
                 with self._lock:
                     self.alertas_pendientes.append({
-                        "tipo":        "BLACKLIST",
-                        "ip_origen":   ip_origen,
-                        "mac_origen":  mac_origen,
+                        "tipo":         "BLACKLIST",
+                        "ip_origen":    ip_origen,
+                        "mac_origen":   mac_origen,
                         "ip_peligrosa": ip_destino
                     })
 
                 print(f"[EMERGENCIA] Conexión a IP peligrosa: {ip_destino} desde {ip_origen}")
 
-    # ── Arranque del sniffer ─────────────────────────────────────────────────
+    # ── Arranque ─────────────────────────────────────────────────────────────
 
     def iniciar(self):
         """
-        Arranca la captura de paquetes. Esta función no termina nunca —
-        corre hasta que el usuario presiona Ctrl+C.
+        Arranca la captura pasiva de paquetes.
+        Esta función no termina hasta Ctrl+C.
         """
         print(f"[Ouroboros] Iniciando captura en {self.interfaz}... (Ctrl+C para detener)")
         print("-" * 55)
 
         try:
-            # store=0 — no guardar paquetes en RAM (importante para rendimiento)
-            # prn — función callback que se llama por cada paquete
-            # iface — interfaz de red donde escuchar
             sniff(
-                iface  = self.interfaz,
-                prn    = self.procesar_paquete,
-                store  = 0
+                iface = self.interfaz,
+                prn   = self.procesar_paquete,
+                store = 0
             )
         except KeyboardInterrupt:
             print("\n[Ouroboros] Captura detenida por el usuario.")

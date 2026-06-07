@@ -87,6 +87,12 @@ def main():
 
     # ── Arrancar sniffer ─────────────────────────────────────────────────────
     sniffer = OuroborosSniffer(interfaz)
+
+    # ARP scan activo antes de iniciar monitoreo pasivo
+    # Puebla dispositivos_conocidos con lo que ya está en la red
+    sniffer.arp_scan()
+
+    # Monitoreo pasivo — corre hasta Ctrl+C
     sniffer.iniciar()
 
 
