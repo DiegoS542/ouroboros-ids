@@ -3,6 +3,7 @@
 
 # Entorno virtual
 venv/
+.venv
 
 # Python
 __pycache__/
@@ -14,3 +15,7 @@ data/ouroboros.db
 
 # Sistema
 .DS_Store
+
+
+# Archivos generados
+ids_bitacora.log
