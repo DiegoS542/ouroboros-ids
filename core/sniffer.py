@@ -89,6 +89,9 @@ class OuroborosSniffer:
         # Cooldown por MAC — evita spam de alertas del mismo dispositivo
         # Estructura: { mac: timestamp_ultima_alerta }
         self._cooldowns    = {}
+        # Cooldown por IP peligrosa — una emergencia por destino cada 60 segundos
+        # Estructura: { ip_peligrosa: timestamp_ultima_alerta }
+        self._cooldowns_bl = {}
         self._cooldown_seg = 60
         self._lock         = threading.Lock()
 
@@ -142,7 +145,7 @@ class OuroborosSniffer:
         except Exception as e:
             print(f"[Ouroboros] Error en ARP scan: {e}")
 
-    # ── Cooldown por MAC ─────────────────────────────────────────────────────
+    # ── Cooldowns ────────────────────────────────────────────────────────────
 
     def _en_cooldown(self, mac):
         """
@@ -159,6 +162,23 @@ class OuroborosSniffer:
                     return True  # En cooldown, ignorar
             self._cooldowns[mac] = ahora
             return False  # Fuera de cooldown, puede alertar
+
+    def _en_cooldown_bl(self, mac_origen, ip_peligrosa):
+        """
+        Verifica si el par (dispositivo, IP peligrosa) está en periodo de cooldown.
+        Cada dispositivo genera su propia alerta por destino — una por minuto.
+        Retorna True si debe ignorarse, False si puede alertar.
+        """
+        from datetime import datetime
+        clave = (mac_origen, ip_peligrosa)
+        ahora = datetime.now().timestamp()
+
+        with self._lock:
+            if clave in self._cooldowns_bl:
+                if ahora - self._cooldowns_bl[clave] < self._cooldown_seg:
+                    return True
+            self._cooldowns_bl[clave] = ahora
+            return False
 
     # ── Callback principal ───────────────────────────────────────────────────
 
@@ -218,21 +238,22 @@ class OuroborosSniffer:
 
             # ── Validación blacklist ─────────────────────────────────────────
             if es_peligrosa(ip_destino, self.ips_peligrosas):
-                registrar_alerta_blacklist(
-                    ip_origen    = ip_origen,
-                    mac_origen   = mac_origen,
-                    ip_peligrosa = ip_destino
-                )
+                if not self._en_cooldown_bl(mac_origen, ip_destino):
+                    registrar_alerta_blacklist(
+                        ip_origen    = ip_origen,
+                        mac_origen   = mac_origen,
+                        ip_peligrosa = ip_destino
+                    )
 
-                with self._lock:
-                    self.alertas_pendientes.append({
-                        "tipo":         "BLACKLIST",
-                        "ip_origen":    ip_origen,
-                        "mac_origen":   mac_origen,
-                        "ip_peligrosa": ip_destino
-                    })
+                    with self._lock:
+                        self.alertas_pendientes.append({
+                            "tipo":         "BLACKLIST",
+                            "ip_origen":    ip_origen,
+                            "mac_origen":   mac_origen,
+                            "ip_peligrosa": ip_destino
+                        })
 
-                print(f"[EMERGENCIA] Conexión a IP peligrosa: {ip_destino} desde {ip_origen}")
+                    print(f"[EMERGENCIA] Conexión a IP peligrosa: {ip_destino} desde {ip_origen}")
 
     # ── Arranque ─────────────────────────────────────────────────────────────
 
