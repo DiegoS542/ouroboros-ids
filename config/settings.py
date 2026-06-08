@@ -40,3 +40,18 @@ def validate():
             f"[Ouroboros] Faltan variables de entorno: {', '.join(missing)}\n"
             f"Revisa tu archivo .env"
         )
+
+
+def get_smtp_credentials():
+    """
+    Recarga el .env y retorna las credenciales SMTP actuales.
+    Permite que el mailer detecte cambios de credenciales sin reiniciar el sistema.
+    """
+    load_dotenv(BASE_DIR / ".env", override=True)
+    return {
+        "email":    os.getenv("SMTP_EMAIL"),
+        "password": os.getenv("SMTP_PASSWORD"),
+        "host":     os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        "port":     int(os.getenv("SMTP_PORT", 587)),
+        "admin":    os.getenv("ADMIN_EMAIL"),
+    }

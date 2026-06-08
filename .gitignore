@@ -1,8 +1,11 @@
+.gitignore
+
 # Credenciales
 .env
 
 # Entorno virtual
 venv/
+.venv
 
 # Python
 __pycache__/
@@ -17,3 +20,7 @@ data/ouroboros.db
 
 # Claudio
 CLAUDE.md
+
+
+# Archivos generados
+data/ids_bitacora.log

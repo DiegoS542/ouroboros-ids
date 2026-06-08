@@ -42,7 +42,8 @@ def init_db():
                 timestamp TEXT NOT NULL,
                 ip        TEXT NOT NULL,
                 mac       TEXT NOT NULL,
-                detalle   TEXT
+                detalle   TEXT,
+                procesada INTEGER DEFAULT 0
             )
         """)
 
@@ -68,7 +69,8 @@ def init_db():
                 score_abuso  INTEGER,
                 pais         TEXT,
                 isp          TEXT,
-                correo_abuso TEXT
+                correo_abuso TEXT,
+                procesada    INTEGER DEFAULT 0
             )
         """)
 
