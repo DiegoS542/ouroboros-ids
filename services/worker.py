@@ -33,8 +33,6 @@ def _procesar_whitelist(conn):
     alertas = cursor.fetchall()
 
     for id_alerta, ip, mac, detalle in alertas:
-        print(f"\n[*] Alerta whitelist ID {id_alerta}: dispositivo no autorizado {ip} / {mac}")
-
         # 1. Correo de advertencia al administrador
         enviar_alerta_whitelist(ip, mac, detalle or "")
 
@@ -60,8 +58,6 @@ def _procesar_blacklist(conn):
     alertas = cursor.fetchall()
 
     for id_alerta, ip_origen, mac_origen, ip_peligrosa in alertas:
-        print(f"\n[*] Alerta blacklist ID {id_alerta}: {ip_origen} → IP peligrosa {ip_peligrosa}")
-
         # 1. Correo de emergencia inmediato
         enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa)
         registrar_evento("BLACKLIST", ip_origen, ip_peligrosa)
@@ -94,14 +90,11 @@ def procesar_alertas():
     except sqlite3.OperationalError:
         # La BD aún no existe o las tablas no están creadas — esperamos al sniffer
         pass
-    except Exception as e:
-        print(f"[-] Error inesperado en el Worker: {e}")
+    except Exception:
+        pass
 
 
 def iniciar_worker():
-    print("[*] Worker de Ouroboros iniciado.")
-    print("[*] Monitoreando la base de datos a la espera del sniffer...")
-
     while True:
         procesar_alertas()
         time.sleep(5)

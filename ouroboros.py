@@ -7,17 +7,21 @@ Arranca el sistema completo:
     1. Valida que todas las variables de entorno estén configuradas
     2. Detecta la interfaz de red disponible
     3. Inicializa el sniffer
-    4. Inicia la captura de paquetes
+    4. Arranca dos hilos en paralelo:
+         Hilo 1 — sniffer (captura paquetes)
+         Hilo 2 — worker (monitorea SQLite y manda correos)
 
 Uso:
-    sudo python ouroboros.py
-    sudo python ouroboros.py --interfaz eth0
+    sudo venv/bin/python ouroboros.py
+    sudo venv/bin/python ouroboros.py --interfaz eth0
 """
 
 import argparse
+import threading
 import netifaces
 from config.settings import validate
 from core.sniffer import OuroborosSniffer
+from services.worker import iniciar_worker
 
 
 def detectar_interfaz():
@@ -92,7 +96,14 @@ def main():
     # Puebla dispositivos_conocidos con lo que ya está en la red
     sniffer.arp_scan()
 
-    # Monitoreo pasivo — corre hasta Ctrl+C
+    # ── Arrancar worker en hilo separado ─────────────────────────────────────
+    # daemon=True garantiza que el hilo muere solo cuando el proceso principal
+    # termina (Ctrl+C) — no hay que matarlo manualmente
+    hilo_worker = threading.Thread(target=iniciar_worker, daemon=True, name="worker")
+    hilo_worker.start()
+    print("[Ouroboros] Worker de alertas iniciado en segundo plano.")
+
+    # ── Monitoreo pasivo — bloquea hasta Ctrl+C ───────────────────────────────
     sniffer.iniciar()
 
 
