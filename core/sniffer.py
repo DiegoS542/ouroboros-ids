@@ -35,7 +35,7 @@ def obtener_rango_red(interfaz):
         raise RuntimeError(f"[Ouroboros] La interfaz {interfaz} no tiene dirección IPv4.")
 
     ip      = addrs[netifaces.AF_INET][0]['addr']
-    mascara = addrs[netifaces.AF_INET][0]['netmask']
+    mascara = addrs[netifaces.AF_INET][0].get('netmask', '255.255.255.0')
 
     # Convertir máscara a prefijo CIDR — ej: 255.255.255.0 → 24
     prefijo = sum(bin(int(x)).count('1') for x in mascara.split('.'))
