@@ -14,10 +14,11 @@ Arranca el sistema completo:
 
 Uso:
     sudo venv/bin/python ouroboros.py
-    sudo venv/bin/python ouroboros.py --interfaz eth0
+    sudo venv/bin/python ouroboros.py --interface eth0
 """
 
 import argparse
+import os
 import sys
 import threading
 import netifaces
@@ -27,8 +28,8 @@ from services.worker import iniciar_worker
 from dashboard.dashboard import app as dashboard_app, init_usuarios
 
 # Subcomandos que pertenecen al CLI de administración.
-# Cualquier otro argumento (--interfaz, nada) arranca el IDS.
-_CLI_COMMANDS = {"status", "devices", "blacklist", "feeds", "dns"}
+# Cualquier otro argumento (--interface, nada) arranca el IDS.
+_CLI_COMMANDS = {"status", "devices", "blacklist", "feeds", "dns", "help"}
 
 
 def detectar_interfaz():
@@ -56,12 +57,17 @@ def detectar_interfaz():
 
 def main():
     # ── Dispatch al CLI de administración ────────────────────────────────────
-    # Si el primer argumento es un subcomando conocido del CLI, delegar y salir.
-    # Así `ouroboros status`, `ouroboros devices list`, etc. funcionan sin sudo.
+    # Los subcomandos del CLI no requieren sudo — el chequeo va después.
     if len(sys.argv) > 1 and sys.argv[1] in _CLI_COMMANDS:
         from cli import despachar
         despachar()
         return
+
+    # ── Validar privilegios ──────────────────────────────────────────────────
+    if os.geteuid() != 0:
+        print("Error: Ouroboros requiere privilegios de administrador.")
+        print("Ejecuta: sudo ouroboros")
+        sys.exit(1)
 
     # ── Banner ───────────────────────────────────────────────────────────────
     print("""
@@ -76,13 +82,13 @@ def main():
 
     # ── Parser de argumentos ─────────────────────────────────────────────────
     # Permite especificar la interfaz manualmente si se desea
-    # Ejemplo: sudo python ouroboros.py --interfaz eth0
+    # Ejemplo: sudo python ouroboros.py --interface eth0
     parser = argparse.ArgumentParser(description="Ouroboros IDS — Sistema de Detección de Intrusos")
     parser.add_argument(
-        "--interfaz",
+        "--interface",
         type=str,
         default=None,
-        help="Interfaz de red a monitorear (ej: wlan0, eth0). Si no se especifica, se detecta automáticamente."
+        help="Network interface to monitor (e.g. wlan0, eth0). Auto-detected if not specified."
     )
     args = parser.parse_args()
 
@@ -97,8 +103,8 @@ def main():
         return
 
     # ── Detectar interfaz ────────────────────────────────────────────────────
-    if args.interfaz:
-        interfaz = args.interfaz
+    if args.interface:
+        interfaz = args.interface
         print(f"[Ouroboros] Interfaz especificada manualmente: {interfaz}")
     else:
         interfaz = detectar_interfaz()

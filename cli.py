@@ -33,6 +33,7 @@ No requiere sudo — solo accede a SQLite y archivos locales.
 
 import argparse
 import ipaddress
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -55,9 +56,21 @@ def _señalar_recarga():
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _conn():
-    """Abre conexión SQLite con acceso a columnas por nombre."""
+    """
+    Abre conexión SQLite con acceso a columnas por nombre.
+    Si la BD no existe o no tiene tablas, termina con mensaje claro.
+    """
+    if not DB_PATH.exists():
+        print("Error: la base de datos no existe. Arranca el IDS primero con: sudo ouroboros")
+        sys.exit(1)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("SELECT 1 FROM dispositivos_conocidos LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.close()
+        print("Error: la base de datos no está inicializada. Arranca el IDS primero con: sudo ouroboros")
+        sys.exit(1)
     return conn
 
 
@@ -70,6 +83,17 @@ def _salir_error(msg):
     """Imprime error y termina con código 1."""
     print(f"Error: {msg}")
     sys.exit(1)
+
+
+def _require_write(path: Path):
+    """
+    Verifica que el proceso tenga permisos de escritura sobre path.
+    Si no los tiene, muestra el comando equivalente con sudo y termina.
+    """
+    target = path if path.exists() else path.parent
+    if not os.access(target, os.W_OK):
+        print("Error: este comando requiere privilegios de administrador.")
+        sys.exit(1)
 
 
 # ── devices list ──────────────────────────────────────────────────────────────
@@ -100,6 +124,7 @@ def cmd_devices_list(_args):
 # ── devices authorize ─────────────────────────────────────────────────────────
 
 def cmd_devices_authorize(args):
+    _require_write(DB_PATH)
     mac = args.mac.strip()
     with _conn() as conn:
         fila = conn.execute(
@@ -116,6 +141,7 @@ def cmd_devices_authorize(args):
 # ── devices block ─────────────────────────────────────────────────────────────
 
 def cmd_devices_block(args):
+    _require_write(DB_PATH)
     mac = args.mac.strip()
     with _conn() as conn:
         fila = conn.execute(
@@ -137,6 +163,7 @@ def cmd_devices_block(args):
 # ── devices clear ─────────────────────────────────────────────────────────────
 
 def cmd_devices_clear(_args):
+    _require_write(DB_PATH)
     with _conn() as conn:
         total = conn.execute(
             "SELECT COUNT(*) FROM dispositivos_conocidos"
@@ -206,6 +233,7 @@ def cmd_blacklist_list(_args):
 # ── blacklist add ─────────────────────────────────────────────────────────────
 
 def cmd_blacklist_add(args):
+    _require_write(BLACKLIST_PATH)
     ip = args.ip.strip()
     try:
         ipaddress.ip_address(ip)
@@ -225,6 +253,7 @@ def cmd_blacklist_add(args):
 # ── blacklist remove ──────────────────────────────────────────────────────────
 
 def cmd_blacklist_remove(args):
+    _require_write(BLACKLIST_PATH)
     ip = args.ip.strip()
     entradas = _leer_blacklist_raw()
 
@@ -267,6 +296,7 @@ def cmd_feeds_list(_args):
 # ── feeds add ─────────────────────────────────────────────────────────────────
 
 def cmd_feeds_add(args):
+    _require_write(DB_PATH)
     nombre = args.nombre.strip()
     url    = args.url.strip()
 
@@ -289,13 +319,9 @@ def cmd_feeds_add(args):
 
 # ── feeds enable / disable ────────────────────────────────────────────────────
 
-def _feed_existe(conn, feed_id):
-    return conn.execute(
-        "SELECT id FROM feed_sources WHERE id = ?", (feed_id,)
-    ).fetchone() is not None
-
 
 def cmd_feeds_enable(args):
+    _require_write(DB_PATH)
     with _conn() as conn:
         fila = conn.execute(
             "SELECT nombre FROM feed_sources WHERE id = ?", (args.id,)
@@ -309,6 +335,7 @@ def cmd_feeds_enable(args):
 
 
 def cmd_feeds_disable(args):
+    _require_write(DB_PATH)
     with _conn() as conn:
         fila = conn.execute(
             "SELECT nombre FROM feed_sources WHERE id = ?", (args.id,)
@@ -319,6 +346,54 @@ def cmd_feeds_disable(args):
         conn.commit()
     _señalar_recarga()
     print(f"✓ Feed '{fila['nombre']}' desactivado — el sniffer lo aplicará en ~5 s.")
+
+
+def cmd_feeds_remove(args):
+    _require_write(DB_PATH)
+    with _conn() as conn:
+        fila = conn.execute(
+            "SELECT nombre FROM feed_sources WHERE id = ?", (args.id,)
+        ).fetchone()
+        if not fila:
+            _salir_error(f"no existe un feed con id {args.id}.")
+        conn.execute("DELETE FROM feed_sources WHERE id = ?", (args.id,))
+        conn.commit()
+    _señalar_recarga()
+    print(f"✓ Feed '{fila['nombre']}' eliminado.")
+
+
+# ── help ─────────────────────────────────────────────────────────────────────
+
+def cmd_help(_args):
+    print("""
+Ouroboros IDS — Comandos disponibles
+
+  DISPOSITIVOS
+    ouroboros devices list                   Lista dispositivos detectados en la red
+    ouroboros devices authorize <mac>        Autoriza un dispositivo
+    ouroboros devices block <mac>            Revoca la autorización de un dispositivo
+    ouroboros devices clear                  Elimina todos los dispositivos conocidos
+
+  LISTA NEGRA
+    ouroboros blacklist list                 Muestra las IPs en la lista negra local
+    ouroboros blacklist add <ip>             Agrega una IP a la lista negra
+    ouroboros blacklist remove <ip>          Elimina una IP de la lista negra
+
+  FEEDS
+    ouroboros feeds list                     Lista los feeds registrados
+    ouroboros feeds add <nombre> <url>       Registra un nuevo feed
+    ouroboros feeds enable <id>              Activa un feed
+    ouroboros feeds disable <id>             Desactiva un feed
+    ouroboros feeds remove <id>              Elimina un feed permanentemente
+
+  CONSULTAS
+    ouroboros status                         Resumen general del sistema
+    ouroboros dns <ip>                       Últimas consultas DNS de una IP
+
+  IDS
+    sudo ouroboros                           Arranca el IDS completo
+    sudo ouroboros --interface <iface>       Especifica la interfaz de red manualmente
+""")
 
 
 # ── status ────────────────────────────────────────────────────────────────────
@@ -379,7 +454,7 @@ def cmd_dns(args):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        prog="cli.py",
+        prog="ouroboros",
         description="Ouroboros IDS — Interfaz de administración en línea de comandos",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -431,12 +506,18 @@ def _build_parser():
     p_feeds_dis = sub_feeds.add_parser("disable", help="Desactiva un feed por id (sin borrarlo)")
     p_feeds_dis.add_argument("id", type=int, help="ID del feed")
 
+    p_feeds_rem = sub_feeds.add_parser("remove", help="Elimina un feed permanentemente")
+    p_feeds_rem.add_argument("id", type=int, help="ID del feed")
+
     # ── status ────────────────────────────────────────────────────────────────
     sub.add_parser("status", help="Resumen general: contadores de todas las tablas")
 
     # ── dns ───────────────────────────────────────────────────────────────────
     p_dns = sub.add_parser("dns", help="Últimas 20 consultas DNS de una IP específica")
     p_dns.add_argument("ip", help="Dirección IP a consultar")
+
+    # ── help ──────────────────────────────────────────────────────────────────
+    sub.add_parser("help", help="Muestra todos los comandos disponibles")
 
     return parser
 
@@ -460,6 +541,7 @@ _DISPATCH = {
         "add":     cmd_feeds_add,
         "enable":  cmd_feeds_enable,
         "disable": cmd_feeds_disable,
+        "remove":  cmd_feeds_remove,
     },
 }
 
@@ -480,6 +562,8 @@ def despachar():
         cmd_status(args)
     elif args.comando == "dns":
         cmd_dns(args)
+    elif args.comando == "help":
+        cmd_help(args)
 
 
 def main():
