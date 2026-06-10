@@ -6,12 +6,19 @@ procesa ARP para whitelist dinámica, y coordina detección con blacklist.
 """
 
 import threading
+import time
+from pathlib import Path
+
 import netifaces
 from scapy.all import sniff, ARP, Ether, srp
 from scapy.layers.inet import IP
 from scapy.layers.dns import DNS, DNSQR
 
 from core.blacklist import cargar_blacklist, es_peligrosa
+
+# Archivo-señal: el dashboard lo crea cuando el admin cambia la blacklist
+# o los feeds. El sniffer lo detecta y recarga en caliente sin reiniciar.
+RELOAD_FLAG = Path(__file__).resolve().parent.parent / "data" / ".reload_blacklist"
 from core.db_writer import (
     init_db,
     registrar_dispositivo,
@@ -255,6 +262,28 @@ class OuroborosSniffer:
 
                     print(f"[EMERGENCIA] Conexión a IP peligrosa: {ip_destino} desde {ip_origen}")
 
+    # ── Recarga en caliente de blacklist ─────────────────────────────────────
+
+    def _vigilar_recarga(self):
+        """
+        Hilo daemon: revisa cada 5 segundos si el dashboard dejó la señal
+        de recarga. Si existe, vuelve a cargar la blacklist (feeds remotos +
+        lista local) y reemplaza el set en memoria — sin reiniciar Ouroboros.
+        """
+        while True:
+            time.sleep(5)
+            if not RELOAD_FLAG.exists():
+                continue
+            try:
+                nuevas = cargar_blacklist()
+                # Reasignación atómica — es_peligrosa() siempre ve un set válido
+                self.ips_peligrosas = nuevas
+                RELOAD_FLAG.unlink(missing_ok=True)
+                print(f"[Ouroboros] Blacklist recargada en caliente — "
+                      f"{len(nuevas)} IPs peligrosas.")
+            except Exception as e:
+                print(f"[Ouroboros] Error al recargar blacklist: {e}")
+
     # ── Arranque ─────────────────────────────────────────────────────────────
 
     def iniciar(self):
@@ -262,6 +291,11 @@ class OuroborosSniffer:
         Arranca la captura pasiva de paquetes.
         Esta función no termina hasta Ctrl+C.
         """
+        # Hilo de recarga en caliente — muere solo al terminar el proceso
+        threading.Thread(target=self._vigilar_recarga, daemon=True,
+                         name="blacklist-reload").start()
+        print("[Ouroboros] Vigilancia de recarga de blacklist activa (cada 5 s).")
+
         print(f"[Ouroboros] Iniciando captura en {self.interfaz}... (Ctrl+C para detener)")
         print("-" * 55)
 
