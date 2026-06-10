@@ -2,7 +2,7 @@
 dashboard.py
 Ouroboros IDS — Dashboard web de administración
 Interfaz Flask para consultar las vistas de la base de datos y
-gestionar listas blanca/negra sin tocar archivos manualmente.
+administrar el sistema sin tocar archivos manualmente.
 
 Seguridad (Identificación / Autenticación / Autorización):
     - Login obligatorio al acceder (usuario + contraseña del .env).
@@ -14,14 +14,14 @@ Seguridad (Identificación / Autenticación / Autorización):
 Vistas:
     /login        Inicio de sesión (emite el JWT)
     /             Resumen general (contadores y últimas alertas)
-    /dispositivos Dispositivos detectados + autorizar/alta en whitelist
+    /dispositivos Dispositivos detectados + autorización por MAC (directo a BD)
     /alertas      Alertas de dispositivos no autorizados (Capa 2/3)
     /dns          Bitácora de dominios visitados
-    /blacklist    Lista negra + conexiones a IPs peligrosas (forense)
+    /blacklist    Lista negra local + feeds remotos + detecciones forenses
     /config       Cambio del correo admin que recibe las alertas
     /logout       Cierra sesión (borra el token)
 
-Uso:
+Uso (desde la raíz del proyecto):
     pip install flask python-dotenv PyJWT
     python dashboard.py        →  http://127.0.0.1:5000
 
@@ -34,20 +34,39 @@ Funciona aunque el sniffer NO esté corriendo: solo lee la base SQLite.
 Para probar con datos falsos:  python seed_demo.py
 """
 
-import os
+import re
 import secrets
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from pathlib import Path
+
+# El dashboard vive en /dashboard — agregar la raíz del proyecto al path
+# para que los imports de config/ y core/ funcionen desde cualquier lugar.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import jwt  # PyJWT
 from flask import (Flask, render_template_string, request, redirect,
                    url_for, flash, make_response)
 
 from config.settings import DB_PATH, BASE_DIR
-from core import db_writer, blacklist as bl
+from core import db_writer
+from core.feed_updater import BLACKLIST_PATH, _cargar_blacklist_local
 
 ENV_PATH = BASE_DIR / ".env"
+
+# Archivo-señal: al tocarlo, el sniffer recarga la blacklist en caliente
+# (lo vigila un hilo en core/sniffer.py cada 5 segundos).
+RELOAD_FLAG = BASE_DIR / "data" / ".reload_blacklist"
+
+
+def señalar_recarga():
+    """Pide al sniffer que recargue la blacklist sin reiniciar Ouroboros."""
+    try:
+        RELOAD_FLAG.touch()
+    except OSError as e:
+        print(f"[Dashboard] No se pudo crear la señal de recarga: {e}")
 
 app = Flask(__name__)
 app.secret_key = "ouroboros-dashboard"  # solo para mensajes flash locales
@@ -120,8 +139,6 @@ def validar_token():
         if datos.get("rol") != "admin":
             return None
         return datos
-    except jwt.ExpiredSignatureError:
-        return None
     except jwt.InvalidTokenError:
         return None
 
@@ -149,6 +166,35 @@ def scalar(sql, params=()):
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(sql, params).fetchone()
         return row[0] if row else 0
+
+
+# ── Gestión de blacklist.txt local ───────────────────────────────────────────
+# Los feeds remotos los descarga core/feed_updater al arrancar el sniffer;
+# aquí solo se administra la lista local y las fuentes de feeds (tabla).
+
+def agregar_ip_local(ip, comentario=""):
+    """Agrega una IP a blacklist.txt. Retorna False si ya estaba."""
+    ip = ip.strip()
+    if ip in _cargar_blacklist_local():
+        return False
+    with open(BLACKLIST_PATH, "a") as f:
+        if comentario:
+            f.write(f"\n# {comentario}\n")
+        f.write(f"{ip}\n")
+    return True
+
+
+def quitar_ip_local(ip):
+    """Elimina una IP de blacklist.txt. Retorna True si existía."""
+    ip = ip.strip()
+    with open(BLACKLIST_PATH, "r") as f:
+        lineas = f.readlines()
+    nuevas = [l for l in lineas if l.strip() != ip]
+    if len(nuevas) == len(lineas):
+        return False
+    with open(BLACKLIST_PATH, "w") as f:
+        f.writelines(nuevas)
+    return True
 
 
 # ── Plantilla base ───────────────────────────────────────────────────────────
@@ -213,6 +259,12 @@ BASE = """
            color:var(--green); padding:9px 14px; border-radius:8px;
            margin-bottom:16px; }
   .vacio { color:var(--dim); padding:24px; text-align:center; }
+  .tabs { display:flex; gap:6px; margin-bottom:18px; }
+  .tabs button { background:var(--panel); color:var(--dim);
+                 border:1px solid var(--border); padding:8px 18px;
+                 border-radius:8px 8px 0 0; }
+  .tabs button.activa { background:var(--accent); color:#fff;
+                        border-color:var(--accent); }
   footer { text-align:center; color:var(--dim); font-size:12px; margin:30px 0; }
 </style>
 </head>
@@ -408,7 +460,9 @@ def dispositivos():
       </form>
       <p style="color:var(--dim); font-size:12px; margin-top:10px">
         La MAC es el identificador real del dispositivo (Capa 2) — la IP puede
-        cambiar por DHCP, así que el sniffer la detecta y actualiza solo.</p>
+        cambiar por DHCP, así que el sniffer la detecta y actualiza solo.
+        La whitelist vive en la tabla <code>dispositivos_conocidos</code> de la BD,
+        la misma que consulta el sniffer con <code>es_autorizado()</code>.</p>
     </div>"""
 
     t = tabla(filas,
@@ -433,7 +487,6 @@ def autorizar(mac):
 @app.route("/alta", methods=["POST"])
 @requiere_token
 def alta_whitelist():
-    import re
     mac = request.form["mac"].strip().upper()
 
     if not re.fullmatch(r"([0-9A-F]{2}:){5}[0-9A-F]{2}", mac):
@@ -489,8 +542,8 @@ def dns():
 @app.route("/blacklist")
 @requiere_token
 def blacklist():
-    # ── Gestión de blacklist.txt ──
-    ips_lista = sorted(bl.cargar_blacklist())
+    # ── Lista local (editable) — los feeds remotos los descarga el sniffer ──
+    ips_lista = sorted(_cargar_blacklist_local())
     filas_txt = [{"ip": ip} for ip in ips_lista]
 
     def quitar_btn(f):
@@ -501,19 +554,50 @@ def blacklist():
 
     gestion = f"""
     <div class="alta">
-      <h2>Agregar IP a la lista negra</h2>
+      <h2>Agregar IP a la lista negra local</h2>
       <form method="post" action="{url_for('blacklist_agregar')}">
         <input type="text" name="ip" placeholder="IP (ej. 91.92.109.196)" required>
         <input type="text" name="comentario" placeholder="Motivo (ej. C2 Server)">
         <input type="submit" value="Agregar">
       </form>
       <p style="color:var(--dim); font-size:12px; margin-top:10px">
-        Nota: el sniffer carga la blacklist al arrancar — los cambios
-        aplican al reiniciar Ouroboros.</p>
+        La blacklist efectiva = feeds remotos + esta lista local.
+        Los cambios se aplican en caliente — el sniffer recarga en ~5 s.</p>
     </div>"""
 
     t_txt = tabla(filas_txt, [("ip", "IP en blacklist.txt"), ("acc", "Acción")],
                   {"acc": quitar_btn})
+
+    # ── Fuentes de feeds remotos (tabla feed_sources) ──
+    feeds = query("SELECT * FROM feed_sources ORDER BY id")
+
+    def estado_feed(f):
+        etiqueta = ('<span class="badge verde">Activo</span>' if f["activo"]
+                    else '<span class="badge rojo">Inactivo</span>')
+        accion = "Desactivar" if f["activo"] else "Activar"
+        boton = f"""<form class="inline" method="post"
+                     action="{url_for('feed_toggle', feed_id=f['id'])}">
+                     <button type="submit">{accion}</button></form>"""
+        return f"{etiqueta} {boton}"
+
+    t_feeds = tabla(feeds,
+                    [("nombre", "Feed"), ("url", "URL"),
+                     ("ultimo_update", "Última descarga"), ("activo", "Estado")],
+                    {"ultimo_update": lambda f: fecha(f["ultimo_update"]) or "—",
+                     "activo": estado_feed})
+
+    alta_feed = f"""
+    <div class="alta" style="margin-top:14px">
+      <h2>Agregar feed de Threat Intelligence</h2>
+      <form method="post" action="{url_for('feed_agregar')}">
+        <input type="text" name="nombre" placeholder="Nombre (ej. Spamhaus DROP)" required>
+        <input type="text" name="url" placeholder="URL del feed (https://...)" required size="40">
+        <input type="submit" value="Agregar feed">
+      </form>
+      <p style="color:var(--dim); font-size:12px; margin-top:10px">
+        El feed debe regresar texto plano con una IP por línea
+        (líneas con # se ignoran). Se descarga en caliente en ~5 s.</p>
+    </div>"""
 
     # ── Detecciones registradas ──
     filas = query("SELECT * FROM alertas_blacklist ORDER BY timestamp DESC LIMIT 200")
@@ -526,9 +610,55 @@ def blacklist():
                "tipo_riesgo": lambda f: f'<span class="badge rojo">{f["tipo_riesgo"]}</span>',
                "score_abuso": lambda f: f'<span class="mal">{f["score_abuso"]}</span>'})
 
+    # ── Pestañas: Lista local | Feeds remotos ──
+    recarga_pendiente = RELOAD_FLAG.exists()
+    aviso_recarga = ("""<div class="flash" style="border-color:var(--yellow);
+                     color:var(--yellow); background:rgba(210,153,34,.12)">
+                     Hay cambios pendientes — el sniffer los aplicará en ~5 s
+                     (si Ouroboros está corriendo).</div>"""
+                     if recarga_pendiente else "")
+
+    boton_recarga = f"""
+    <form class="inline" method="post" action="{url_for('feeds_actualizar')}"
+          style="margin-left:auto">
+      <button type="submit">⟳ Actualizar feeds ahora</button>
+    </form>"""
+
+    tabs = f"""
+    {aviso_recarga}
+    <div class="tabs" style="display:flex; align-items:center">
+      <button type="button" id="btn-local" class="activa"
+              onclick="verTab('local')">Lista local ({len(ips_lista)})</button>
+      <button type="button" id="btn-feeds"
+              onclick="verTab('feeds')">Feeds remotos ({len(feeds)})</button>
+      {boton_recarga}
+    </div>
+
+    <div id="tab-local">
+      {gestion}
+      <h2>Lista negra local ({len(ips_lista)} IPs)</h2>
+      {t_txt}
+    </div>
+
+    <div id="tab-feeds" style="display:none">
+      <h2>Feeds remotos de Threat Intelligence</h2>
+      {t_feeds}
+      {alta_feed}
+    </div>
+
+    <script>
+      function verTab(n) {{
+        document.getElementById('tab-local').style.display = (n==='local') ? '' : 'none';
+        document.getElementById('tab-feeds').style.display = (n==='feeds') ? '' : 'none';
+        document.getElementById('btn-local').classList.toggle('activa', n==='local');
+        document.getElementById('btn-feeds').classList.toggle('activa', n==='feeds');
+        location.hash = n;   // sobrevive al auto-refresh de la página
+      }}
+      if (location.hash === '#feeds') verTab('feeds');
+    </script>"""
+
     return render("blacklist", "IPs Peligrosas",
-                  gestion +
-                  f"<h2>Lista negra cargada ({len(ips_lista)} IPs)</h2>" + t_txt +
+                  tabs +
                   "<h2 style='margin-top:24px'>Conexiones a IPs peligrosas — datos forenses (Whois/AbuseIPDB)</h2>" + t)
 
 
@@ -544,10 +674,11 @@ def blacklist_agregar():
         flash(f"'{ip}' no es una IP válida.")
         return redirect(url_for("blacklist"))
 
-    if bl.agregar_ip(ip, comentario):
-        flash(f"IP {ip} agregada a la lista negra.")
+    if agregar_ip_local(ip, comentario):
+        señalar_recarga()
+        flash(f"IP {ip} agregada a la lista negra local — el sniffer la aplicará en ~5 s.")
     else:
-        flash(f"La IP {ip} ya estaba en la lista negra.")
+        flash(f"La IP {ip} ya estaba en la lista negra local.")
     return redirect(url_for("blacklist"))
 
 
@@ -555,11 +686,59 @@ def blacklist_agregar():
 @requiere_token
 def blacklist_quitar():
     ip = request.form["ip"].strip()
-    if bl.quitar_ip(ip):
-        flash(f"IP {ip} eliminada de la lista negra.")
+    if quitar_ip_local(ip):
+        señalar_recarga()
+        flash(f"IP {ip} eliminada de la lista negra local — el sniffer lo aplicará en ~5 s.")
     else:
-        flash(f"La IP {ip} no estaba en la lista.")
+        flash(f"La IP {ip} no estaba en la lista local.")
     return redirect(url_for("blacklist"))
+
+
+@app.route("/feeds/toggle/<int:feed_id>", methods=["POST"])
+@requiere_token
+def feed_toggle(feed_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE feed_sources SET activo = 1 - activo WHERE id = ?", (feed_id,)
+        )
+        conn.commit()
+    señalar_recarga()
+    flash("Estado del feed actualizado — el sniffer recargará en ~5 s.")
+    return redirect(url_for("blacklist") + "#feeds")
+
+
+@app.route("/feeds/agregar", methods=["POST"])
+@requiere_token
+def feed_agregar():
+    nombre = request.form["nombre"].strip()
+    url    = request.form["url"].strip()
+
+    if not url.startswith(("http://", "https://")):
+        flash("La URL del feed debe empezar con http:// o https://")
+        return redirect(url_for("blacklist"))
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO feed_sources (nombre, url, activo) VALUES (?, ?, 1)",
+                (nombre, url)
+            )
+            conn.commit()
+        señalar_recarga()
+        flash(f"Feed '{nombre}' agregado — el sniffer lo descargará en ~5 s.")
+    except sqlite3.IntegrityError:
+        flash(f"Esa URL ya está registrada como feed.")  # url UNIQUE en la tabla
+    return redirect(url_for("blacklist") + "#feeds")
+
+
+@app.route("/feeds/actualizar", methods=["POST"])
+@requiere_token
+def feeds_actualizar():
+    """Fuerza la recarga de feeds + lista local en el sniffer, sin reiniciar."""
+    señalar_recarga()
+    flash("Recarga solicitada — el sniffer descargará los feeds en ~5 s "
+          "(si Ouroboros está corriendo).")
+    return redirect(url_for("blacklist") + "#feeds")
 
 
 # ── Configuración: correo del admin que recibe las alertas ───────────────────
