@@ -2,35 +2,138 @@
 dashboard.py
 Ouroboros IDS — Dashboard web de administración
 Interfaz Flask para consultar las vistas de la base de datos y
-gestionar la lista blanca sin tocar archivos manualmente.
+gestionar listas blanca/negra sin tocar archivos manualmente.
+
+Seguridad (Identificación / Autenticación / Autorización):
+    - Login obligatorio al acceder (usuario + contraseña del .env).
+    - Al autenticarse se emite un JWT firmado (HS256) con el claim rol=admin
+      y expiración de 30 minutos, guardado en cookie HttpOnly.
+    - Toda vista y acción (incluido el cambio del correo de alertas)
+      valida el token antes de ejecutarse.
 
 Vistas:
+    /login        Inicio de sesión (emite el JWT)
     /             Resumen general (contadores y últimas alertas)
     /dispositivos Dispositivos detectados + autorizar/alta en whitelist
     /alertas      Alertas de dispositivos no autorizados (Capa 2/3)
     /dns          Bitácora de dominios visitados
     /blacklist    Lista negra + conexiones a IPs peligrosas (forense)
-    /config       Cambio del correo admin (identificación/autenticación/autorización)
+    /config       Cambio del correo admin que recibe las alertas
+    /logout       Cierra sesión (borra el token)
 
 Uso:
-    python dashboard.py
-    Abrir http://127.0.0.1:5000 en el navegador.
+    pip install flask python-dotenv PyJWT
+    python dashboard.py        →  http://127.0.0.1:5000
+
+Variables requeridas en .env:
+    DASHBOARD_USER=admin
+    DASHBOARD_PASSWORD=tu_clave
+    JWT_SECRET=(se genera solo si falta)
 
 Funciona aunque el sniffer NO esté corriendo: solo lee la base SQLite.
 Para probar con datos falsos:  python seed_demo.py
 """
 
 import os
+import secrets
 import sqlite3
-from flask import Flask, render_template_string, request, redirect, url_for, flash
+from datetime import datetime, timedelta, timezone
+from functools import wraps
+
+import jwt  # PyJWT
+from flask import (Flask, render_template_string, request, redirect,
+                   url_for, flash, make_response)
 
 from config.settings import DB_PATH, BASE_DIR
-from core import db_writer, whitelist, blacklist as bl
+from core import db_writer, blacklist as bl
 
 ENV_PATH = BASE_DIR / ".env"
 
 app = Flask(__name__)
 app.secret_key = "ouroboros-dashboard"  # solo para mensajes flash locales
+
+TOKEN_MINUTOS = 30  # vigencia del JWT
+
+
+# ── Manejo del .env ──────────────────────────────────────────────────────────
+
+def leer_env_var(clave):
+    """Lee el valor actual de una variable directamente del .env."""
+    if not ENV_PATH.exists():
+        return ""
+    for linea in ENV_PATH.read_text().splitlines():
+        if linea.strip().startswith(f"{clave}="):
+            return linea.split("=", 1)[1].strip()
+    return ""
+
+
+def escribir_env_var(clave, valor):
+    """Actualiza (o agrega) una variable en el .env sin tocar las demás."""
+    lineas = ENV_PATH.read_text().splitlines() if ENV_PATH.exists() else []
+    encontrada = False
+    for i, linea in enumerate(lineas):
+        if linea.strip().startswith(f"{clave}="):
+            lineas[i] = f"{clave}={valor}"
+            encontrada = True
+            break
+    if not encontrada:
+        lineas.append(f"{clave}={valor}")
+    ENV_PATH.write_text("\n".join(lineas) + "\n")
+
+
+def obtener_jwt_secret():
+    """
+    Lee JWT_SECRET del .env. Si no existe, genera uno aleatorio y lo
+    persiste — así el secreto nunca queda hardcoded en el código.
+    """
+    secreto = leer_env_var("JWT_SECRET")
+    if not secreto:
+        secreto = secrets.token_hex(32)
+        escribir_env_var("JWT_SECRET", secreto)
+        print("[Ouroboros] JWT_SECRET generado y guardado en .env")
+    return secreto
+
+
+JWT_SECRET = obtener_jwt_secret()
+
+
+# ── JWT: emisión y validación ────────────────────────────────────────────────
+
+def crear_token(usuario):
+    """Emite un JWT firmado con rol admin y expiración."""
+    payload = {
+        "sub": usuario,                                          # identificación
+        "rol": "admin",                                          # autorización
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=TOKEN_MINUTOS),
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+
+def validar_token():
+    """Retorna el payload si la cookie trae un JWT válido, o None."""
+    token = request.cookies.get("token")
+    if not token:
+        return None
+    try:
+        datos = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        if datos.get("rol") != "admin":
+            return None
+        return datos
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+
+def requiere_token(f):
+    """Decorador: exige JWT válido o redirige al login."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if validar_token() is None:
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return wrapper
 
 
 # ── Acceso a datos (solo lectura sobre la misma BD del IDS) ──────────────────
@@ -75,6 +178,7 @@ BASE = """
           border-radius:6px; font-size:13px; }
   nav a:hover { color:var(--txt); background:var(--border); }
   nav a.activa { color:var(--txt); background:var(--accent); }
+  nav a.salir { color:var(--red); }
   main { max-width:1100px; margin:24px auto; padding:0 24px; }
   h2 { font-size:16px; margin-bottom:14px; color:var(--blue); }
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
@@ -121,6 +225,7 @@ BASE = """
                           ('blacklist','IPs Peligrosas'), ('config','Configuración')] %}
       <a href="{{ url_for(ep) }}" class="{{ 'activa' if vista==ep }}">{{ nombre }}</a>
     {% endfor %}
+    <a href="{{ url_for('logout') }}" class="salir">Salir ⏻</a>
   </nav>
 </header>
 <main>
@@ -129,14 +234,63 @@ BASE = """
   {% endwith %}
   {{ contenido|safe }}
 </main>
-<footer>Ouroboros IDS — Dashboard de administración · auto-refresh cada 15 s</footer>
+<footer>Ouroboros IDS — Dashboard de administración · sesión JWT ({{ TOKEN_MIN }} min) · auto-refresh cada 15 s</footer>
+</body>
+</html>
+"""
+
+LOGIN = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Ouroboros IDS — Iniciar sesión</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --txt:#e6edf3;
+          --dim:#8b949e; --red:#f85149; --accent:#7c3aed; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--txt); height:100vh;
+         display:flex; align-items:center; justify-content:center;
+         font:14px/1.5 'Segoe UI', system-ui, sans-serif; }
+  .caja { background:var(--panel); border:1px solid var(--border);
+          border-radius:12px; padding:34px; width:340px; text-align:center; }
+  h1 { font-size:22px; margin-bottom:4px; }
+  h1 span { color:var(--accent); }
+  p.sub { color:var(--dim); font-size:13px; margin-bottom:22px; }
+  input { width:100%; background:var(--bg); border:1px solid var(--border);
+          color:var(--txt); padding:10px 12px; border-radius:8px;
+          margin-bottom:12px; font-size:14px; }
+  button { width:100%; background:var(--accent); color:#fff; border:none;
+           padding:10px; border-radius:8px; font-size:14px; cursor:pointer; }
+  button:hover { opacity:.88; }
+  .error { background:rgba(248,81,73,.12); border:1px solid var(--red);
+           color:var(--red); padding:8px; border-radius:8px;
+           margin-bottom:14px; font-size:13px; }
+  footer { color:var(--dim); font-size:11px; margin-top:18px; }
+</style>
+</head>
+<body>
+  <div class="caja">
+    <h1>🐍 Ouroboros <span>IDS</span></h1>
+    <p class="sub">Identifícate para administrar el sistema</p>
+    {% with msgs = get_flashed_messages() %}
+      {% for m in msgs %}<div class="error">{{ m }}</div>{% endfor %}
+    {% endwith %}
+    <form method="post">
+      <input type="text" name="usuario" placeholder="Usuario" required autofocus>
+      <input type="password" name="clave" placeholder="Contraseña" required>
+      <button type="submit">Iniciar sesión</button>
+    </form>
+    <footer>Acceso autenticado con JWT · expira en {{ TOKEN_MIN }} min</footer>
+  </div>
 </body>
 </html>
 """
 
 
 def render(vista, titulo, contenido):
-    return render_template_string(BASE, vista=vista, titulo=titulo, contenido=contenido)
+    return render_template_string(BASE, vista=vista, titulo=titulo,
+                                  contenido=contenido, TOKEN_MIN=TOKEN_MINUTOS)
 
 
 def tabla(filas, columnas, formato=None):
@@ -162,9 +316,43 @@ def fecha(iso):
     return (iso or "")[:19].replace("T", " ")
 
 
-# ── Vistas ───────────────────────────────────────────────────────────────────
+# ── Login / Logout ───────────────────────────────────────────────────────────
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        usuario = request.form["usuario"].strip()
+        clave   = request.form["clave"].strip()
+
+        # Identificación + Autenticación contra credenciales del .env
+        if (usuario == leer_env_var("DASHBOARD_USER")
+                and clave == leer_env_var("DASHBOARD_PASSWORD")
+                and usuario and clave):
+            resp = make_response(redirect(url_for("resumen")))
+            resp.set_cookie(
+                "token", crear_token(usuario),
+                httponly=True,            # JS no puede leer el token
+                samesite="Lax",
+                max_age=TOKEN_MINUTOS * 60,
+            )
+            return resp
+
+        flash("Usuario o contraseña incorrectos.")
+
+    return render_template_string(LOGIN, TOKEN_MIN=TOKEN_MINUTOS)
+
+
+@app.route("/logout")
+def logout():
+    resp = make_response(redirect(url_for("login")))
+    resp.delete_cookie("token")
+    return resp
+
+
+# ── Vistas (todas protegidas con JWT) ────────────────────────────────────────
 
 @app.route("/")
+@requiere_token
 def resumen():
     total_disp   = scalar("SELECT COUNT(*) FROM dispositivos_conocidos")
     autorizados  = scalar("SELECT COUNT(*) FROM dispositivos_conocidos WHERE autorizado=1")
@@ -199,6 +387,7 @@ def resumen():
 
 
 @app.route("/dispositivos")
+@requiere_token
 def dispositivos():
     filas = query("SELECT * FROM dispositivos_conocidos ORDER BY ultimo_visto DESC")
 
@@ -212,13 +401,14 @@ def dispositivos():
 
     alta = f"""
     <div class="alta">
-      <h2>Alta manual en lista blanca</h2>
+      <h2>Alta manual en lista blanca (por MAC)</h2>
       <form method="post" action="{url_for('alta_whitelist')}">
-        <input type="text" name="nombre" placeholder="Nombre (ej. PC Sergio)" required>
-        <input type="text" name="ip"  placeholder="IP (192.168.1.x)" required>
         <input type="text" name="mac" placeholder="MAC (AA:BB:CC:DD:EE:FF)" required>
-        <input type="submit" value="Agregar">
+        <input type="submit" value="Autorizar MAC">
       </form>
+      <p style="color:var(--dim); font-size:12px; margin-top:10px">
+        La MAC es el identificador real del dispositivo (Capa 2) — la IP puede
+        cambiar por DHCP, así que el sniffer la detecta y actualiza solo.</p>
     </div>"""
 
     t = tabla(filas,
@@ -233,6 +423,7 @@ def dispositivos():
 
 
 @app.route("/autorizar/<mac>", methods=["POST"])
+@requiere_token
 def autorizar(mac):
     db_writer.autorizar_dispositivo(mac)
     flash(f"Dispositivo {mac} autorizado.")
@@ -240,18 +431,24 @@ def autorizar(mac):
 
 
 @app.route("/alta", methods=["POST"])
+@requiere_token
 def alta_whitelist():
-    nombre = request.form["nombre"].strip()
-    ip     = request.form["ip"].strip()
-    mac    = request.form["mac"].strip().upper()
+    import re
+    mac = request.form["mac"].strip().upper()
 
-    whitelist.agregar_dispositivo(nombre, ip, mac)   # whitelist.json
-    db_writer.registrar_y_autorizar(ip, mac)          # base de datos
-    flash(f"'{nombre}' agregado a la lista blanca ({ip} / {mac}).")
+    if not re.fullmatch(r"([0-9A-F]{2}:){5}[0-9A-F]{2}", mac):
+        flash(f"'{mac}' no es una MAC válida (formato AA:BB:CC:DD:EE:FF).")
+        return redirect(url_for("dispositivos"))
+
+    # Directo a la BD — la misma que consulta es_autorizado() del sniffer.
+    # IP placeholder: el sniffer la actualiza al ver tráfico de esa MAC.
+    db_writer.registrar_y_autorizar("0.0.0.0", mac)
+    flash(f"MAC {mac} autorizada en la lista blanca.")
     return redirect(url_for("dispositivos"))
 
 
 @app.route("/alertas")
+@requiere_token
 def alertas():
     filas = query("SELECT * FROM alertas_whitelist ORDER BY timestamp DESC LIMIT 200")
     t = tabla(filas,
@@ -265,6 +462,7 @@ def alertas():
 
 
 @app.route("/dns")
+@requiere_token
 def dns():
     filtro = request.args.get("ip", "").strip()
     if filtro:
@@ -289,6 +487,7 @@ def dns():
 
 
 @app.route("/blacklist")
+@requiere_token
 def blacklist():
     # ── Gestión de blacklist.txt ──
     ips_lista = sorted(bl.cargar_blacklist())
@@ -334,6 +533,7 @@ def blacklist():
 
 
 @app.route("/blacklist/agregar", methods=["POST"])
+@requiere_token
 def blacklist_agregar():
     import ipaddress
     ip = request.form["ip"].strip()
@@ -352,6 +552,7 @@ def blacklist_agregar():
 
 
 @app.route("/blacklist/quitar", methods=["POST"])
+@requiere_token
 def blacklist_quitar():
     ip = request.form["ip"].strip()
     if bl.quitar_ip(ip):
@@ -361,64 +562,35 @@ def blacklist_quitar():
     return redirect(url_for("blacklist"))
 
 
-# ── Configuración (correo del admin con Identificación/Autenticación/Autorización) ──
-
-def leer_env_var(clave):
-    """Lee el valor actual de una variable directamente del .env."""
-    if not ENV_PATH.exists():
-        return ""
-    for linea in ENV_PATH.read_text().splitlines():
-        if linea.strip().startswith(f"{clave}="):
-            return linea.split("=", 1)[1].strip()
-    return ""
-
-
-def escribir_env_var(clave, valor):
-    """Actualiza (o agrega) una variable en el .env sin tocar las demás."""
-    lineas = ENV_PATH.read_text().splitlines() if ENV_PATH.exists() else []
-    encontrada = False
-    for i, linea in enumerate(lineas):
-        if linea.strip().startswith(f"{clave}="):
-            lineas[i] = f"{clave}={valor}"
-            encontrada = True
-            break
-    if not encontrada:
-        lineas.append(f"{clave}={valor}")
-    ENV_PATH.write_text("\n".join(lineas) + "\n")
-
+# ── Configuración: correo del admin que recibe las alertas ───────────────────
 
 @app.route("/config")
+@requiere_token
 def config():
     actual = leer_env_var("ADMIN_EMAIL") or "(no configurado)"
+    sesion = validar_token()
     contenido = f"""
     <div class="alta">
       <h2>Correo del administrador (recibe las alertas)</h2>
       <p style="color:var(--dim); margin-bottom:12px">
-        Actual: <strong>{actual}</strong></p>
+        Actual: <strong>{actual}</strong> ·
+        Sesión: <strong>{sesion['sub']}</strong> (rol {sesion['rol']})</p>
       <form method="post" action="{url_for('cambiar_admin')}">
-        <input type="text" name="usuario" placeholder="Usuario admin" required>
-        <input type="password" name="clave" placeholder="Contraseña del dashboard" required>
         <input type="text" name="nuevo_correo" placeholder="Nuevo correo admin" required>
         <input type="submit" value="Cambiar correo">
       </form>
       <p style="color:var(--dim); font-size:12px; margin-top:10px">
-        Identificación: usuario · Autenticación: contraseña ·
-        Autorización: solo el rol admin puede modificar el destinatario de alertas.
+        Identificación: usuario del login · Autenticación: JWT firmado (HS256) ·
+        Autorización: claim rol=admin del token.
         El cambio aplica de inmediato — el mailer recarga el .env en cada envío.</p>
     </div>"""
     return render("config", "Configuración", contenido)
 
 
 @app.route("/config/admin", methods=["POST"])
+@requiere_token
 def cambiar_admin():
-    usuario = request.form["usuario"].strip()
-    clave   = request.form["clave"].strip()
-    nuevo   = request.form["nuevo_correo"].strip()
-
-    # Identificación + Autenticación + Autorización contra el .env
-    if usuario != leer_env_var("DASHBOARD_USER") or clave != leer_env_var("DASHBOARD_PASSWORD"):
-        flash("Acceso denegado: usuario o contraseña incorrectos.")
-        return redirect(url_for("config"))
+    nuevo = request.form["nuevo_correo"].strip()
 
     if "@" not in nuevo or "." not in nuevo.split("@")[-1]:
         flash("Correo inválido.")
