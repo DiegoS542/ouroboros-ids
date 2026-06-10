@@ -299,9 +299,24 @@ BASE = """
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
            gap:14px; margin-bottom:26px; }
   .card { background:var(--panel); border:1px solid var(--border);
-          border-radius:10px; padding:16px; }
+          border-radius:10px; padding:16px; display:block;
+          text-decoration:none; color:var(--txt);
+          transition:transform .15s, border-color .15s; }
+  a.card:hover { border-color:var(--accent); transform:translateY(-3px);
+                 cursor:pointer; }
   .card .num { font-size:30px; font-weight:700; }
   .card .lbl { color:var(--dim); font-size:12px; text-transform:uppercase; }
+  .card.peligro { border-color:var(--red); background:rgba(248,81,73,.08);
+                  animation:pulso 1.6s ease-in-out infinite; }
+  .card.peligro .num, .card.peligro .lbl { color:var(--red); }
+  @keyframes pulso {
+    0%, 100% { box-shadow:0 0 0 rgba(248,81,73,0); }
+    50%      { box-shadow:0 0 16px rgba(248,81,73,.5); }
+  }
+  .panel-peligro { border:1px solid var(--red); border-radius:10px;
+                   padding:16px; background:rgba(248,81,73,.05);
+                   margin-top:24px; }
+  .panel-peligro h2 { color:var(--red); margin-bottom:12px; }
   table { width:100%; border-collapse:collapse; background:var(--panel);
           border:1px solid var(--border); border-radius:10px; overflow:hidden; }
   th, td { padding:9px 12px; text-align:left; border-bottom:1px solid var(--border); }
@@ -347,7 +362,7 @@ BASE = """
                           ('config','Configuración')] %}
       <a href="{{ url_for(ep) }}" class="{{ 'activa' if vista==ep }}">{{ nombre }}</a>
     {% endfor %}
-    <a href="{{ url_for('cambiar_password') }}">Contraseña 🔑</a>
+    <a href="{{ url_for('cambiar_password') }}">Contraseña</a>
     <a href="{{ url_for('logout') }}" class="salir">Salir ⏻</a>
   </nav>
 </header>
@@ -562,13 +577,22 @@ def resumen():
     ultimas = query("""SELECT timestamp, ip_peligrosa, tipo_riesgo, score_abuso
                        FROM alertas_blacklist ORDER BY timestamp DESC LIMIT 5""")
 
+    # Tarjetas-atajo: cada una lleva a su vista al hacer clic.
+    # La de IPs peligrosas entra en modo alarma (roja, pulsante) si hay alertas.
+    peligro = "peligro" if alertas_bl > 0 else ""
+    icono_bl = "🚨 " if alertas_bl > 0 else ""
     cards = f"""
     <div class="cards">
-      <div class="card"><div class="num">{total_disp}</div><div class="lbl">Dispositivos detectados</div></div>
-      <div class="card"><div class="num ok">{autorizados}</div><div class="lbl">Autorizados</div></div>
-      <div class="card"><div class="num warn">{alertas_wl}</div><div class="lbl">Alertas whitelist</div></div>
-      <div class="card"><div class="num mal">{alertas_bl}</div><div class="lbl">Alertas IP peligrosa</div></div>
-      <div class="card"><div class="num">{dns_total}</div><div class="lbl">Consultas DNS</div></div>
+      <a class="card" href="{url_for('dispositivos')}" title="Ir a Dispositivos">
+        <div class="num">{total_disp}</div><div class="lbl">Dispositivos detectados</div></a>
+      <a class="card" href="{url_for('dispositivos')}" title="Ir a Dispositivos">
+        <div class="num ok">{autorizados}</div><div class="lbl">Autorizados</div></a>
+      <a class="card" href="{url_for('alertas')}" title="Ir a Alertas Whitelist">
+        <div class="num warn">{alertas_wl}</div><div class="lbl">Alertas whitelist</div></a>
+      <a class="card {peligro}" href="{url_for('blacklist')}" title="Ir a IPs Peligrosas">
+        <div class="num mal">{icono_bl}{alertas_bl}</div><div class="lbl">Alertas IP peligrosa</div></a>
+      <a class="card" href="{url_for('dns')}" title="Ir a Bitácora DNS">
+        <div class="num">{dns_total}</div><div class="lbl">Consultas DNS</div></a>
     </div>"""
 
     t1 = tabla(top, [("dominio", "Dominio"), ("c", "Visitas")])
@@ -578,9 +602,18 @@ def resumen():
                {"timestamp": lambda f: fecha(f["timestamp"]),
                 "tipo_riesgo": lambda f: f'<span class="badge rojo">{f["tipo_riesgo"]}</span>'})
 
+    panel_emergencias = f"""
+    <div class="panel-peligro">
+      <h2>🚨 Últimas alertas de emergencia</h2>
+      {t2}
+      <p style="margin-top:10px; font-size:13px">
+        <a href="{url_for('blacklist')}" style="color:var(--red)">
+        Ver análisis forense completo →</a></p>
+    </div>"""
+
     return render("resumen", "Resumen",
                   cards + "<h2>Top dominios visitados</h2>" + t1 +
-                  "<h2 style='margin-top:24px'>Últimas alertas de emergencia</h2>" + t2)
+                  panel_emergencias)
 
 
 @app.route("/dispositivos")
