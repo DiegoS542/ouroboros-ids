@@ -34,6 +34,7 @@ Funciona aunque el sniffer NO esté corriendo: solo lee la base SQLite.
 Para probar con datos falsos:  python seed_demo.py
 """
 
+import html
 import re
 import secrets
 import sqlite3
@@ -559,7 +560,7 @@ def resumen():
 
     top = query("""SELECT dominio, COUNT(*) c FROM bitacora_dns
                    GROUP BY dominio ORDER BY c DESC LIMIT 5""")
-    ultimas = query("""SELECT timestamp, ip_peligrosa, tipo_riesgo, score_abuso
+    ultimas = query("""SELECT timestamp, ip_origen, ip_peligrosa
                        FROM alertas_blacklist ORDER BY timestamp DESC LIMIT 5""")
 
     cards = f"""
@@ -573,10 +574,9 @@ def resumen():
 
     t1 = tabla(top, [("dominio", "Dominio"), ("c", "Visitas")])
     t2 = tabla(ultimas,
-               [("timestamp", "Fecha"), ("ip_peligrosa", "IP peligrosa"),
-                ("tipo_riesgo", "Riesgo"), ("score_abuso", "Score")],
-               {"timestamp": lambda f: fecha(f["timestamp"]),
-                "tipo_riesgo": lambda f: f'<span class="badge rojo">{f["tipo_riesgo"]}</span>'})
+               [("timestamp", "Fecha"), ("ip_origen", "IP origen"),
+                ("ip_peligrosa", "IP peligrosa")],
+               {"timestamp": lambda f: fecha(f["timestamp"])})
 
     return render("resumen", "Resumen",
                   cards + "<h2>Top dominios visitados</h2>" + t1 +
@@ -672,7 +672,7 @@ def dns():
     buscador = f"""
     <div class="alta">
       <form method="get">
-        <input type="text" name="ip" value="{filtro}" placeholder="Filtrar por IP origen">
+        <input type="text" name="ip" value="{html.escape(filtro)}" placeholder="Filtrar por IP origen">
         <input type="submit" value="Filtrar">
       </form>
     </div>"""
@@ -744,16 +744,28 @@ def blacklist():
         (líneas con # se ignoran). Se descarga en caliente en ~5 s.</p>
     </div>"""
 
-    # ── Detecciones registradas ──
-    filas = query("SELECT * FROM alertas_blacklist ORDER BY timestamp DESC LIMIT 200")
+    # ── Detecciones registradas con análisis forense ──
+    filas = query("""
+        SELECT a.timestamp, a.ip_origen, a.ip_peligrosa,
+               COALESCE(f.tipo_riesgo,  '—') AS tipo_riesgo,
+               COALESCE(f.score_abuso,  '—') AS score_abuso,
+               COALESCE(f.pais,         '—') AS pais,
+               COALESCE(f.isp,          '—') AS isp,
+               COALESCE(f.correo_abuso, '—') AS correo_abuso
+        FROM alertas_blacklist a
+        LEFT JOIN analisis_forense f ON a.ip_peligrosa = f.ip
+        ORDER BY a.timestamp DESC LIMIT 200
+    """)
     t = tabla(filas,
               [("timestamp", "Fecha"), ("ip_origen", "IP origen"),
                ("ip_peligrosa", "IP peligrosa"), ("tipo_riesgo", "Riesgo"),
                ("score_abuso", "Score"), ("pais", "País"),
                ("isp", "ISP"), ("correo_abuso", "Contacto abuso")],
               {"timestamp": lambda f: fecha(f["timestamp"]),
-               "tipo_riesgo": lambda f: f'<span class="badge rojo">{f["tipo_riesgo"]}</span>',
-               "score_abuso": lambda f: f'<span class="mal">{f["score_abuso"]}</span>'})
+               "tipo_riesgo": lambda f: (f'<span class="badge rojo">{f["tipo_riesgo"]}</span>'
+                                         if f["tipo_riesgo"] != "—" else "—"),
+               "score_abuso": lambda f: (f'<span class="mal">{f["score_abuso"]}</span>'
+                                         if f["score_abuso"] != "—" else "—")})
 
     # ── Pestañas: Lista local | Feeds remotos ──
     recarga_pendiente = RELOAD_FLAG.exists()

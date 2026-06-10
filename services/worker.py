@@ -13,6 +13,7 @@ from config.settings import DB_PATH
 from services.mailer import enviar_alerta_whitelist, enviar_alerta_blacklist, enviar_reporte_forense
 from services.abuse_api import analizar_ip
 from services.logger import registrar_evento
+from core.db_writer import registrar_analisis_forense
 
 
 def _conectar():
@@ -65,15 +66,22 @@ def _procesar_blacklist(conn):
         # 2. Recolección de inteligencia forense
         reporte = analizar_ip(ip_peligrosa)
 
-        # 3. Correo con reporte detallado si hay datos
+        # 3. Persistir análisis forense en la BD (INSERT OR REPLACE por IP única)
         if reporte:
+            registrar_analisis_forense(
+                ip_peligrosa,
+                reporte["tipo_riesgo"], reporte["score_abuso"],
+                reporte["pais"], reporte["isp"], reporte["correo_abuso"]
+            )
+
+            # 4. Correo con reporte detallado
             enviar_reporte_forense(
                 ip_origen, mac_origen, ip_peligrosa,
                 reporte["tipo_riesgo"], reporte["score_abuso"],
                 reporte["pais"], reporte["isp"], reporte["correo_abuso"]
             )
 
-        # 4. Marcar como procesada
+        # 5. Marcar como procesada
         conn.execute(
             "UPDATE alertas_blacklist SET procesada = 1 WHERE id = ?", (id_alerta,)
         )
