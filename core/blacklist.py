@@ -5,6 +5,8 @@ Carga IPs peligrosas (feeds remotos + blacklist.txt local) y verifica amenazas.
 """
 
 from core.feed_updater import cargar_blacklist_completa
+from pathlib import Path
+BLACKLIST_PATH = Path(__file__).resolve().parent.parent / "data" / "blacklist.txt"
 
 
 def cargar_blacklist():
