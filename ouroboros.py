@@ -7,9 +7,10 @@ Arranca el sistema completo:
     1. Valida que todas las variables de entorno estén configuradas
     2. Detecta la interfaz de red disponible
     3. Inicializa el sniffer
-    4. Arranca dos hilos en paralelo:
+    4. Arranca tres hilos en paralelo:
          Hilo 1 — sniffer (captura paquetes)
          Hilo 2 — worker (monitorea SQLite y manda correos)
+         Hilo 3 — dashboard (Flask en http://0.0.0.0:5000)
 
 Uso:
     sudo venv/bin/python ouroboros.py
@@ -23,6 +24,7 @@ import netifaces
 from config.settings import validate
 from core.sniffer import OuroborosSniffer
 from services.worker import iniciar_worker
+from dashboard.dashboard import app as dashboard_app, init_usuarios
 
 # Subcomandos que pertenecen al CLI de administración.
 # Cualquier otro argumento (--interfaz, nada) arranca el IDS.
@@ -110,11 +112,26 @@ def main():
     sniffer.arp_scan()
 
     # ── Arrancar worker en hilo separado ─────────────────────────────────────
-    # daemon=True garantiza que el hilo muere solo cuando el proceso principal
-    # termina (Ctrl+C) — no hay que matarlo manualmente
     hilo_worker = threading.Thread(target=iniciar_worker, daemon=True, name="worker")
     hilo_worker.start()
     print("[Ouroboros] Worker de alertas iniciado en segundo plano.")
+
+    # ── Arrancar dashboard en hilo separado ──────────────────────────────────
+    import logging
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+    init_usuarios()
+    hilo_dashboard = threading.Thread(
+        target=lambda: dashboard_app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False),
+        daemon=True, name="dashboard"
+    )
+    hilo_dashboard.start()
+    ip_red = netifaces.ifaddresses(interfaz)[netifaces.AF_INET][0]['addr']
+    sep = "─" * 48
+    print(f"\n  {sep}")
+    print(f"  [Dashboard] Local:     http://127.0.0.1:5000")
+    print(f"  [Dashboard] Red local: http://{ip_red}:5000")
+    print(f"  {sep}\n")
 
     # ── Monitoreo pasivo — bloquea hasta Ctrl+C ───────────────────────────────
     sniffer.iniciar()
