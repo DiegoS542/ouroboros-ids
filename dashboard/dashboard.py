@@ -201,10 +201,11 @@ def scalar(sql, params=()):
 
 def init_usuarios():
     """
-    Crea la tabla de usuarios si no existe. Si está vacía, siembra la
-    cuenta admin con las credenciales del .env — marcada para cambiar
-    la contraseña en el primer login. Las contraseñas se guardan
-    hasheadas (PBKDF2 vía werkzeug), nunca en texto plano.
+    Crea la tabla de usuarios si no existe. Si está vacía, genera una
+    contraseña aleatoria para el admin, la hashea y la persiste.
+    Retorna la contraseña en texto plano solo en ese primer arranque,
+    None si el admin ya existía. El usuario está marcado para cambiar
+    la contraseña en el primer login.
     """
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -220,17 +221,17 @@ def init_usuarios():
         conn.commit()
 
         if conn.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0] == 0:
-            usuario = leer_env_var("DASHBOARD_USER") or "admin"
-            clave   = leer_env_var("DASHBOARD_PASSWORD") or "ouroboros"
+            clave = secrets.token_urlsafe(10)
             conn.execute(
                 """INSERT INTO usuarios (usuario, password_hash, rol, cambiar_pwd, creado)
                    VALUES (?, ?, 'admin', 1, ?)""",
-                (usuario, generate_password_hash(clave),
+                ("admin", generate_password_hash(clave),
                  datetime.now(timezone.utc).isoformat())
             )
             conn.commit()
-            print(f"[Ouroboros] Usuario admin inicial: '{usuario}' — "
-                  "deberá cambiar la contraseña en su primer login.")
+            return clave  # solo existe en texto plano este instante
+
+    return None
 
 
 def buscar_usuario(usuario):

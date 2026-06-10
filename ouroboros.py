@@ -120,7 +120,7 @@ def main():
     import logging
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
-    init_usuarios()
+    pwd_inicial = init_usuarios()
     hilo_dashboard = threading.Thread(
         target=lambda: dashboard_app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False),
         daemon=True, name="dashboard"
@@ -131,7 +131,13 @@ def main():
     print(f"\n  {sep}")
     print(f"  [Dashboard] Local:     http://127.0.0.1:5000")
     print(f"  [Dashboard] Red local: http://{ip_red}:5000")
-    print(f"  {sep}\n")
+    if pwd_inicial:
+        print(f"  [Dashboard] Usuario:    admin")
+        print(f"  [Dashboard] Contraseña: {pwd_inicial}")
+    print(f"  {sep}")
+    if pwd_inicial:
+        print(f"\n  ⚠ Primer arranque — cambia la contraseña desde el dashboard antes de usar el sistema.")
+    print()
 
     # ── Monitoreo pasivo — bloquea hasta Ctrl+C ───────────────────────────────
     sniffer.iniciar()
