@@ -25,7 +25,17 @@ cp .env.example .env
 # Llenar .env con credenciales reales
 ```
 
-### 3. Uso
+### 3. Registrar el comando `ouroboros` en el sistema
+
+Este paso hace que `ouroboros` funcione desde cualquier directorio sin activar el venv:
+
+```bash
+sudo ln -sf "$(pwd)/venv/bin/ouroboros" /usr/local/bin/ouroboros
+```
+
+Solo se ejecuta una vez por instalación.
+
+### 4. Uso
 
 ```bash
 # Arrancar el IDS (requiere sudo para raw sockets)
