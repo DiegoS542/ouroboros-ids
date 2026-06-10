@@ -74,8 +74,56 @@ def init_db():
             )
         """)
 
+        # Tabla 5 — Fuentes de feeds de IPs peligrosas
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS feed_sources (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre        TEXT NOT NULL,
+                url           TEXT NOT NULL UNIQUE,
+                activo        INTEGER DEFAULT 1,
+                ultimo_update TEXT
+            )
+        """)
+
         conn.commit()
     print("[Ouroboros] Base de datos inicializada correctamente.")
+    inicializar_feeds_default()
+
+
+FEEDS_DEFAULT = [
+    ("Feodo Tracker",     "https://feodotracker.abuse.ch/downloads/ipblocklist.txt"),
+    ("Emerging Threats",  "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"),
+    ("Tor Exit Nodes",    "https://check.torproject.org/torbulkexitlist"),
+    ("CINS Score",        "https://cinsscore.com/list/ci-badguys.txt"),
+]
+
+
+def inicializar_feeds_default():
+    """
+    Inserta los feeds por defecto solo si la tabla feed_sources está vacía.
+    Se llama automáticamente desde init_db() en cada arranque.
+    """
+    with get_connection() as conn:
+        cursor = conn.execute("SELECT COUNT(*) FROM feed_sources")
+        if cursor.fetchone()[0] > 0:
+            return  # Ya hay feeds registrados, no tocar
+
+        conn.executemany(
+            "INSERT INTO feed_sources (nombre, url, activo) VALUES (?, ?, 1)",
+            FEEDS_DEFAULT
+        )
+        conn.commit()
+    print(f"[Ouroboros] Feeds por defecto registrados — {len(FEEDS_DEFAULT)} fuentes.")
+
+
+def actualizar_ultimo_update_feed(feed_id):
+    """Actualiza el timestamp de descarga exitosa de un feed."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE feed_sources SET ultimo_update = ? WHERE id = ?",
+            (datetime.now().isoformat(), feed_id)
+        )
+        conn.commit()
 
 
 # ── dispositivos_conocidos ───────────────────────────────────────────────────

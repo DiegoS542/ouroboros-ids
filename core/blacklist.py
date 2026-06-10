@@ -1,30 +1,18 @@
 """
 core/blacklist.py
 Ouroboros IDS — Módulo de lista negra
-Carga IPs peligrosas y verifica si un destino representa una amenaza.
+Carga IPs peligrosas (feeds remotos + blacklist.txt local) y verifica amenazas.
 """
 
-from pathlib import Path
-
-BLACKLIST_PATH = Path(__file__).resolve().parent.parent / "data" / "blacklist.txt"
+from core.feed_updater import cargar_blacklist_completa
 
 
 def cargar_blacklist():
     """
-    Lee blacklist.txt e ignora comentarios y líneas vacías.
-    Retorna un conjunto de IPs peligrosas.
+    Descarga feeds remotos activos y fusiona con blacklist.txt local.
+    Retorna un conjunto de IPs peligrosas listo para usar.
     """
-    ips_peligrosas = set()
-
-    with open(BLACKLIST_PATH, "r") as f:
-        for linea in f:
-            linea = linea.strip()
-            # Ignorar comentarios y líneas vacías
-            if linea and not linea.startswith("#"):
-                ips_peligrosas.add(linea)
-
-    print(f"[Ouroboros] Blacklist cargada — {len(ips_peligrosas)} IPs peligrosas.")
-    return ips_peligrosas
+    return cargar_blacklist_completa()
 
 
 def es_peligrosa(ip_destino, ips_peligrosas):
