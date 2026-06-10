@@ -1,69 +1,48 @@
 ## Instalación
 
-**1. Clonar el repositorio**
+### 1. Prerequisitos del sistema
 
 ```bash
-git clone https://github.com/tuusuario/ouroboros-ids.git
+# Arch Linux
+sudo pacman -S libpcap git python
+
+# Ubuntu / Debian
+sudo apt install libpcap-dev git python3 python3-venv
+
+# Fedora
+sudo dnf install libpcap-devel git python3
+```
+
+### 2. Clonar e instalar
+
+```bash
+git clone https://github.com/usuario/ouroboros-ids.git
 cd ouroboros-ids
-```
-
-**2. Crear el entorno virtual**
-
-```bash
 python -m venv venv
-
-# Linux / Mac
 source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-```
-
-**3. Instalar dependencias Python**
-
-```bash
-pip install -r requirements.txt
-```
-
-**4. Configurar credenciales**
-
-```bash
+pip install -e .
 cp .env.example .env
-nano .env  # Llenar con las credenciales reales
+# Llenar .env con credenciales reales
 ```
 
-Variables necesarias en `.env`:## Instalación
-
-**1. Clonar el repositorio**
+### 3. Uso
 
 ```bash
-git clone https://github.com/tuusuario/ouroboros-ids.git
-cd ouroboros-ids
+# Arrancar el IDS (requiere sudo para raw sockets)
+sudo ouroboros
+
+# Administración (no requiere sudo)
+ouroboros status
+ouroboros devices list
+ouroboros devices authorize <mac>
+ouroboros devices block <mac>
+ouroboros devices clear
+ouroboros blacklist list
+ouroboros blacklist add <ip>
+ouroboros blacklist remove <ip>
+ouroboros feeds list
+ouroboros feeds add <nombre> <url>
+ouroboros feeds enable <id>
+ouroboros feeds disable <id>
+ouroboros dns <ip>
 ```
-
-**2. Crear el entorno virtual**
-
-```bash
-python -m venv venv
-
-# Linux / Mac
-source venv/bin/activate
-
-# Windows (solo para servicios — el sniffer no corre en Windows)
-venv\Scripts\activate
-```
-
-**3. Instalar dependencias Python**
-
-```bash
-pip install -r requirements.txt
-```
-
-**4. Configurar credenciales**
-
-```bash
-cp .env.example .env
-nano .env  # Llenar con las credenciales reales
-```
-
-Variables necesarias en `.env`:

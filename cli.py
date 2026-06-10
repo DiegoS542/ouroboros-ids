@@ -6,6 +6,7 @@ Comandos disponibles:
     devices  list                  — lista dispositivos conocidos
     devices  authorize <mac>       — autoriza un dispositivo (aplica en caliente)
     devices  block <mac>           — revoca autorización (aplica en caliente)
+    devices  clear                 — elimina todos los dispositivos conocidos
 
     blacklist list                 — muestra IPs en blacklist.txt
     blacklist add <ip>             — agrega IP a blacklist.txt
@@ -19,10 +20,13 @@ Comandos disponibles:
     status                         — resumen general de contadores
     dns <ip>                       — últimas 20 consultas DNS de una IP
 
-Uso:
+Uso (instalado vía pip install -e .):
+    ouroboros status
+    ouroboros devices list
+    ouroboros blacklist add 1.2.3.4
+
+Uso directo:
     python cli.py status
-    python cli.py devices list
-    python cli.py blacklist add 1.2.3.4
 
 No requiere sudo — solo accede a SQLite y archivos locales.
 """
@@ -128,6 +132,31 @@ def cmd_devices_block(args):
         conn.commit()
 
     print(f"✓ Autorización de {fila['mac'].upper()} revocada.")
+
+
+# ── devices clear ─────────────────────────────────────────────────────────────
+
+def cmd_devices_clear(_args):
+    with _conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM dispositivos_conocidos"
+        ).fetchone()[0]
+
+    if total == 0:
+        print("No hay dispositivos registrados.")
+        return
+
+    resp = input(f"⚠ Se eliminarán {total} dispositivos conocidos. ¿Continuar? [y/N]: ").strip().lower()
+    if resp != "y":
+        print("Cancelado.")
+        return
+
+    with _conn() as conn:
+        conn.execute("DELETE FROM dispositivos_conocidos")
+        conn.commit()
+
+    print("✓ Lista de dispositivos limpiada.")
+    print("⚠ Reiniciar Ouroboros para repoblar via ARP scan.")
 
 
 # ── blacklist helpers ─────────────────────────────────────────────────────────
@@ -370,6 +399,8 @@ def _build_parser():
     p_block = sub_dev.add_parser("block", help="Revoca la autorización de un dispositivo")
     p_block.add_argument("mac", help="Dirección MAC (ej: AA:BB:CC:DD:EE:FF)")
 
+    sub_dev.add_parser("clear", help="Elimina todos los dispositivos conocidos (con confirmación)")
+
     # ── blacklist ─────────────────────────────────────────────────────────────
     p_bl = sub.add_parser("blacklist", help="Gestión de la lista negra local (blacklist.txt)")
     sub_bl = p_bl.add_subparsers(dest="subcomando", metavar="subcomando")
@@ -417,6 +448,7 @@ _DISPATCH = {
         "list":      cmd_devices_list,
         "authorize": cmd_devices_authorize,
         "block":     cmd_devices_block,
+        "clear":     cmd_devices_clear,
     },
     "blacklist": {
         "list":   cmd_blacklist_list,
@@ -432,7 +464,13 @@ _DISPATCH = {
 }
 
 
-def main():
+def despachar():
+    """
+    Punto de entrada público. Parsea sys.argv y ejecuta el comando.
+    Llamado por ouroboros.main() cuando detecta un subcomando de administración,
+    y también directamente cuando se invoca cli.py standalone.
+    No llama a sys.exit() al terminar normalmente — solo _salir_error() en errores.
+    """
     parser = _build_parser()
     args   = parser.parse_args()
 
@@ -442,6 +480,11 @@ def main():
         cmd_status(args)
     elif args.comando == "dns":
         cmd_dns(args)
+
+
+def main():
+    """Wrapper para uso standalone: python cli.py <comando>"""
+    despachar()
 
 
 if __name__ == "__main__":

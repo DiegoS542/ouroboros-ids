@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ouroboros-ids"
+version = "1.0.0"
+description = "Sistema de Detección de Intrusos institucional"
+requires-python = ">=3.10"
+dependencies = [
+    "Flask>=3.1",
+    "PyJWT>=2.10",
+    "Werkzeug>=3.1",
+    "netifaces2",
+    "python-dotenv>=1.2",
+    "requests>=2.34",
+    "scapy>=2.7",
+    "python-whois>=0.9",
+]
+
+[project.scripts]
+ouroboros = "ouroboros:main"
+
+[tool.setuptools]
+py-modules = ["ouroboros", "cli"]
+packages   = ["config", "core", "services", "dashboard"]

@@ -27,3 +27,8 @@ CLAUDE.md
 # Archivos generados
 data/ids_bitacora.log
 data/.reload_blacklist
+
+# Build artifacts
+*.egg-info/
+dist/
+build/

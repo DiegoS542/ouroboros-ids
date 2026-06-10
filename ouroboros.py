@@ -17,11 +17,16 @@ Uso:
 """
 
 import argparse
+import sys
 import threading
 import netifaces
 from config.settings import validate
 from core.sniffer import OuroborosSniffer
 from services.worker import iniciar_worker
+
+# Subcomandos que pertenecen al CLI de administración.
+# Cualquier otro argumento (--interfaz, nada) arranca el IDS.
+_CLI_COMMANDS = {"status", "devices", "blacklist", "feeds", "dns"}
 
 
 def detectar_interfaz():
@@ -48,6 +53,14 @@ def detectar_interfaz():
 
 
 def main():
+    # ── Dispatch al CLI de administración ────────────────────────────────────
+    # Si el primer argumento es un subcomando conocido del CLI, delegar y salir.
+    # Así `ouroboros status`, `ouroboros devices list`, etc. funcionan sin sudo.
+    if len(sys.argv) > 1 and sys.argv[1] in _CLI_COMMANDS:
+        from cli import despachar
+        despachar()
+        return
+
     # ── Banner ───────────────────────────────────────────────────────────────
     print("""
     ╔═══════════════════════════════════════════╗
