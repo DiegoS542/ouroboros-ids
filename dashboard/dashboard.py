@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import jwt  # PyJWT
 from flask import (Flask, render_template_string, request, redirect,
                    url_for, flash, make_response)
+from werkzeug.security import generate_password_hash, check_password_hash
 
 from config.settings import DB_PATH, BASE_DIR
 from core import db_writer
@@ -118,11 +119,15 @@ JWT_SECRET = obtener_jwt_secret()
 
 # ── JWT: emisión y validación ────────────────────────────────────────────────
 
-def crear_token(usuario):
-    """Emite un JWT firmado con rol admin y expiración."""
+ROLES_VALIDOS = ("admin", "operador")
+
+
+def crear_token(usuario, rol, cambiar_pwd=False):
+    """Emite un JWT firmado con el rol del usuario y expiración."""
     payload = {
-        "sub": usuario,                                          # identificación
-        "rol": "admin",                                          # autorización
+        "sub": usuario,                          # identificación
+        "rol": rol,                              # autorización
+        "pwd": 1 if cambiar_pwd else 0,          # debe cambiar contraseña
         "exp": datetime.now(timezone.utc) + timedelta(minutes=TOKEN_MINUTOS),
         "iat": datetime.now(timezone.utc),
     }
@@ -136,7 +141,7 @@ def validar_token():
         return None
     try:
         datos = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        if datos.get("rol") != "admin":
+        if datos.get("rol") not in ROLES_VALIDOS:
             return None
         return datos
     except jwt.InvalidTokenError:
@@ -144,11 +149,34 @@ def validar_token():
 
 
 def requiere_token(f):
-    """Decorador: exige JWT válido o redirige al login."""
+    """
+    Decorador: exige JWT válido o redirige al login.
+    Si el token trae la marca de contraseña temporal, obliga a cambiarla
+    antes de poder usar cualquier otra vista.
+    """
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if validar_token() is None:
+        datos = validar_token()
+        if datos is None:
             return redirect(url_for("login"))
+        if datos.get("pwd") == 1 and request.endpoint not in ("cambiar_password", "logout"):
+            return redirect(url_for("cambiar_password"))
+        return f(*args, **kwargs)
+    return wrapper
+
+
+def requiere_admin(f):
+    """Decorador: además del token, exige rol admin (autorización)."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        datos = validar_token()
+        if datos is None:
+            return redirect(url_for("login"))
+        if datos.get("rol") != "admin":
+            flash("Se requiere rol de administrador para esa acción.")
+            return redirect(url_for("resumen"))
+        if datos.get("pwd") == 1:
+            return redirect(url_for("cambiar_password"))
         return f(*args, **kwargs)
     return wrapper
 
@@ -166,6 +194,48 @@ def scalar(sql, params=()):
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(sql, params).fetchone()
         return row[0] if row else 0
+
+
+# ── Usuarios: tabla, seed inicial y helpers ──────────────────────────────────
+
+def init_usuarios():
+    """
+    Crea la tabla de usuarios si no existe. Si está vacía, siembra la
+    cuenta admin con las credenciales del .env — marcada para cambiar
+    la contraseña en el primer login. Las contraseñas se guardan
+    hasheadas (PBKDF2 vía werkzeug), nunca en texto plano.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                usuario       TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                rol           TEXT NOT NULL DEFAULT 'operador',
+                cambiar_pwd   INTEGER DEFAULT 1,
+                creado        TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+        if conn.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0] == 0:
+            usuario = leer_env_var("DASHBOARD_USER") or "admin"
+            clave   = leer_env_var("DASHBOARD_PASSWORD") or "ouroboros"
+            conn.execute(
+                """INSERT INTO usuarios (usuario, password_hash, rol, cambiar_pwd, creado)
+                   VALUES (?, ?, 'admin', 1, ?)""",
+                (usuario, generate_password_hash(clave),
+                 datetime.now(timezone.utc).isoformat())
+            )
+            conn.commit()
+            print(f"[Ouroboros] Usuario admin inicial: '{usuario}' — "
+                  "deberá cambiar la contraseña en su primer login.")
+
+
+def buscar_usuario(usuario):
+    """Retorna el registro del usuario o None."""
+    filas = query("SELECT * FROM usuarios WHERE usuario = ?", (usuario,))
+    return filas[0] if filas else None
 
 
 # ── Gestión de blacklist.txt local ───────────────────────────────────────────
@@ -205,7 +275,6 @@ BASE = """
 <head>
 <meta charset="utf-8">
 <title>Ouroboros IDS — {{ titulo }}</title>
-<meta http-equiv="refresh" content="15">
 <style>
   :root {
     --bg:#0d1117; --panel:#161b22; --border:#30363d; --txt:#e6edf3;
@@ -274,9 +343,11 @@ BASE = """
   <nav>
     {% for ep, nombre in [('resumen','Resumen'), ('dispositivos','Dispositivos'),
                           ('alertas','Alertas Whitelist'), ('dns','Bitácora DNS'),
-                          ('blacklist','IPs Peligrosas'), ('config','Configuración')] %}
+                          ('blacklist','IPs Peligrosas'), ('usuarios','Usuarios'),
+                          ('config','Configuración')] %}
       <a href="{{ url_for(ep) }}" class="{{ 'activa' if vista==ep }}">{{ nombre }}</a>
     {% endfor %}
+    <a href="{{ url_for('cambiar_password') }}">Contraseña 🔑</a>
     <a href="{{ url_for('logout') }}" class="salir">Salir ⏻</a>
   </nav>
 </header>
@@ -286,7 +357,21 @@ BASE = """
   {% endwith %}
   {{ contenido|safe }}
 </main>
-<footer>Ouroboros IDS — Dashboard de administración · sesión JWT ({{ TOKEN_MIN }} min) · auto-refresh cada 15 s</footer>
+<footer>Ouroboros IDS — Dashboard de administración · sesión JWT ({{ TOKEN_MIN }} min) · auto-refresh inteligente (se pausa mientras escribes)</footer>
+<script>
+  // Auto-refresh inteligente: recarga cada 15 s SOLO si el usuario no está
+  // escribiendo y ningún campo tiene contenido — así los formularios
+  // (como el cambio de contraseña) nunca se borran a media captura.
+  setInterval(function () {
+    var a = document.activeElement;
+    var escribiendo = a && ['INPUT', 'SELECT', 'TEXTAREA'].indexOf(a.tagName) !== -1;
+    var camposConTexto = Array.prototype.some.call(
+      document.querySelectorAll('input[type=text], input[type=password]'),
+      function (i) { return i.value.length > 0; }
+    );
+    if (!escribiendo && !camposConTexto) location.reload();
+  }, 15000);
+</script>
 </body>
 </html>
 """
@@ -376,13 +461,14 @@ def login():
         usuario = request.form["usuario"].strip()
         clave   = request.form["clave"].strip()
 
-        # Identificación + Autenticación contra credenciales del .env
-        if (usuario == leer_env_var("DASHBOARD_USER")
-                and clave == leer_env_var("DASHBOARD_PASSWORD")
-                and usuario and clave):
-            resp = make_response(redirect(url_for("resumen")))
+        # Identificación + Autenticación contra la tabla usuarios (hash PBKDF2)
+        u = buscar_usuario(usuario)
+        if u and check_password_hash(u["password_hash"], clave):
+            debe_cambiar = bool(u["cambiar_pwd"])
+            destino = "cambiar_password" if debe_cambiar else "resumen"
+            resp = make_response(redirect(url_for(destino)))
             resp.set_cookie(
-                "token", crear_token(usuario),
+                "token", crear_token(u["usuario"], u["rol"], debe_cambiar),
                 httponly=True,            # JS no puede leer el token
                 samesite="Lax",
                 max_age=TOKEN_MINUTOS * 60,
@@ -392,6 +478,65 @@ def login():
         flash("Usuario o contraseña incorrectos.")
 
     return render_template_string(LOGIN, TOKEN_MIN=TOKEN_MINUTOS)
+
+
+@app.route("/cambiar-password", methods=["GET", "POST"])
+@requiere_token
+def cambiar_password():
+    datos = validar_token()
+    usuario = datos["sub"]
+
+    if request.method == "POST":
+        actual    = request.form["actual"].strip()
+        nueva     = request.form["nueva"].strip()
+        confirmar = request.form["confirmar"].strip()
+
+        u = buscar_usuario(usuario)
+        if not check_password_hash(u["password_hash"], actual):
+            flash("La contraseña actual es incorrecta.")
+        elif len(nueva) < 8:
+            flash("La nueva contraseña debe tener al menos 8 caracteres.")
+        elif nueva == actual:
+            flash("La nueva contraseña debe ser diferente a la actual.")
+        elif nueva != confirmar:
+            flash("La confirmación no coincide.")
+        else:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "UPDATE usuarios SET password_hash = ?, cambiar_pwd = 0 WHERE usuario = ?",
+                    (generate_password_hash(nueva), usuario)
+                )
+                conn.commit()
+            # Re-emitir token sin la marca de contraseña temporal
+            resp = make_response(redirect(url_for("resumen")))
+            resp.set_cookie(
+                "token", crear_token(usuario, datos["rol"], False),
+                httponly=True, samesite="Lax", max_age=TOKEN_MINUTOS * 60,
+            )
+            flash("Contraseña actualizada correctamente.")
+            return resp
+
+    obligado = datos.get("pwd") == 1
+    aviso = ("""<div class="flash" style="border-color:var(--yellow);
+             color:var(--yellow); background:rgba(210,153,34,.12)">
+             Tu contraseña es temporal — debes cambiarla para continuar.</div>"""
+             if obligado else "")
+
+    contenido = f"""
+    {aviso}
+    <div class="alta" style="max-width:430px">
+      <h2>Cambiar contraseña — {usuario}</h2>
+      <form method="post">
+        <input type="password" name="actual" placeholder="Contraseña actual"
+               required style="width:100%; margin-bottom:10px">
+        <input type="password" name="nueva" placeholder="Nueva contraseña (mín. 8 caracteres)"
+               required minlength="8" style="width:100%; margin-bottom:10px">
+        <input type="password" name="confirmar" placeholder="Confirmar nueva contraseña"
+               required minlength="8" style="width:100%; margin-bottom:12px">
+        <input type="submit" value="Cambiar contraseña">
+      </form>
+    </div>"""
+    return render("config", "Cambiar contraseña", contenido)
 
 
 @app.route("/logout")
@@ -741,10 +886,116 @@ def feeds_actualizar():
     return redirect(url_for("blacklist") + "#feeds")
 
 
+# ── Gestión de usuarios (solo rol admin) ─────────────────────────────────────
+
+@app.route("/usuarios")
+@requiere_admin
+def usuarios():
+    sesion = validar_token()
+    filas = query("SELECT id, usuario, rol, cambiar_pwd, creado FROM usuarios ORDER BY id")
+
+    def acciones(f):
+        if f["usuario"] == sesion["sub"]:
+            return '<span class="badge verde">Tu sesión</span>'
+        return f"""<form class="inline" method="post"
+                    action="{url_for('usuario_eliminar', user_id=f['id'])}"
+                    onsubmit="return confirm('¿Eliminar a {f['usuario']}?')">
+                    <button type="submit">Eliminar</button></form>"""
+
+    alta = f"""
+    <div class="alta">
+      <h2>Crear cuenta nueva</h2>
+      <form method="post" action="{url_for('usuario_agregar')}">
+        <input type="text" name="usuario" placeholder="Usuario" required>
+        <input type="password" name="clave" placeholder="Contraseña temporal (mín. 8)"
+               required minlength="8">
+        <select name="rol" style="background:var(--bg); color:var(--txt);
+                border:1px solid var(--border); padding:7px 10px;
+                border-radius:6px; margin-right:8px">
+          <option value="operador">operador</option>
+          <option value="admin">admin</option>
+        </select>
+        <input type="submit" value="Crear cuenta">
+      </form>
+      <p style="color:var(--dim); font-size:12px; margin-top:10px">
+        La cuenta nueva entra con contraseña temporal y el sistema le
+        exigirá cambiarla en su primer login. Rol operador: opera el IDS ·
+        Rol admin: además gestiona cuentas y el correo de alertas.</p>
+    </div>"""
+
+    t = tabla(filas,
+              [("usuario", "Usuario"), ("rol", "Rol"),
+               ("cambiar_pwd", "Contraseña"), ("creado", "Creado"), ("acc", "Acción")],
+              {"rol": lambda f: (f'<span class="badge verde">{f["rol"]}</span>'
+                                 if f["rol"] == "admin"
+                                 else f'<span class="badge rojo" style="background:rgba(88,166,255,.15); color:var(--blue)">{f["rol"]}</span>'),
+               "cambiar_pwd": lambda f: ('<span class="warn">Temporal</span>'
+                                         if f["cambiar_pwd"] else '<span class="ok">Propia</span>'),
+               "creado": lambda f: fecha(f["creado"]),
+               "acc": acciones})
+
+    return render("usuarios", "Usuarios", alta + "<h2>Cuentas del dashboard</h2>" + t)
+
+
+@app.route("/usuarios/agregar", methods=["POST"])
+@requiere_admin
+def usuario_agregar():
+    usuario = request.form["usuario"].strip()
+    clave   = request.form["clave"].strip()
+    rol     = request.form.get("rol", "operador").strip()
+
+    if not re.fullmatch(r"[a-zA-Z0-9_.-]{3,30}", usuario):
+        flash("Usuario inválido — usa 3-30 caracteres alfanuméricos.")
+        return redirect(url_for("usuarios"))
+    if len(clave) < 8:
+        flash("La contraseña temporal debe tener al menos 8 caracteres.")
+        return redirect(url_for("usuarios"))
+    if rol not in ROLES_VALIDOS:
+        rol = "operador"
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                """INSERT INTO usuarios (usuario, password_hash, rol, cambiar_pwd, creado)
+                   VALUES (?, ?, ?, 1, ?)""",
+                (usuario, generate_password_hash(clave), rol,
+                 datetime.now(timezone.utc).isoformat())
+            )
+            conn.commit()
+        flash(f"Cuenta '{usuario}' ({rol}) creada — deberá cambiar su contraseña al entrar.")
+    except sqlite3.IntegrityError:
+        flash(f"El usuario '{usuario}' ya existe.")
+    return redirect(url_for("usuarios"))
+
+
+@app.route("/usuarios/eliminar/<int:user_id>", methods=["POST"])
+@requiere_admin
+def usuario_eliminar(user_id):
+    sesion = validar_token()
+    u = query("SELECT usuario, rol FROM usuarios WHERE id = ?", (user_id,))
+    if not u:
+        flash("Esa cuenta no existe.")
+        return redirect(url_for("usuarios"))
+    if u[0]["usuario"] == sesion["sub"]:
+        flash("No puedes eliminar tu propia sesión.")
+        return redirect(url_for("usuarios"))
+    if u[0]["rol"] == "admin":
+        admins = scalar("SELECT COUNT(*) FROM usuarios WHERE rol = 'admin'")
+        if admins <= 1:
+            flash("No se puede eliminar el último administrador.")
+            return redirect(url_for("usuarios"))
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM usuarios WHERE id = ?", (user_id,))
+        conn.commit()
+    flash(f"Cuenta '{u[0]['usuario']}' eliminada.")
+    return redirect(url_for("usuarios"))
+
+
 # ── Configuración: correo del admin que recibe las alertas ───────────────────
 
 @app.route("/config")
-@requiere_token
+@requiere_admin
 def config():
     actual = leer_env_var("ADMIN_EMAIL") or "(no configurado)"
     sesion = validar_token()
@@ -767,7 +1018,7 @@ def config():
 
 
 @app.route("/config/admin", methods=["POST"])
-@requiere_token
+@requiere_admin
 def cambiar_admin():
     nuevo = request.form["nuevo_correo"].strip()
 
@@ -781,6 +1032,10 @@ def cambiar_admin():
 
 
 if __name__ == "__main__":
-    db_writer.init_db()  # crea tablas si no existen — funciona sin el sniffer
-    print("[Ouroboros] Dashboard en http://127.0.0.1:5000")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    db_writer.init_db()   # crea tablas si no existen — funciona sin el sniffer
+    init_usuarios()       # tabla de cuentas + admin inicial del .env
+
+    # 0.0.0.0 = accesible desde otros dispositivos de la red local
+    # vía http://IP-del-servidor:5000 (asegúrate de abrir el puerto en el firewall)
+    print("[Ouroboros] Dashboard en http://0.0.0.0:5000 — accesible en la red local")
+    app.run(host="0.0.0.0", port=5000, debug=False)
