@@ -60,10 +60,15 @@ def obtener_ip_mac_propias(interfaz):
     """
     Retorna la IP y MAC de la propia máquina en la interfaz dada.
     Se usa al arrancar para autorizar la máquina que corre Ouroboros.
+
+    Se usa 17 (AF_PACKET en Linux) en lugar de netifaces.AF_LINK porque
+    netifaces2 define AF_LINK = -1000 (valor genérico cross-platform) mientras
+    que netifaces original usaba 17. El valor 17 es una constante del SO, no
+    del paquete, por lo que funciona con cualquier versión de netifaces.
     """
     addrs = netifaces.ifaddresses(interfaz)
     ip    = addrs[netifaces.AF_INET][0]['addr']
-    mac   = addrs[netifaces.AF_LINK][0]['addr']
+    mac   = addrs[17][0]['addr']
     return ip, mac
 
 
@@ -71,10 +76,26 @@ def obtener_gateway():
     """
     Retorna la IP del gateway de la red (el router).
     Se usa al arrancar para autorizarlo automáticamente.
+
+    Soporta dos formatos según la versión de netifaces instalada:
+    - netifaces original: {'default': {2: ('ip', 'iface', ...)}, ...}
+    - netifaces2:         {<AF_INET: 2>: [('ip', 'iface', is_default), ...], ...}
+      (sin clave 'default'; el gateway está marcado con is_default=True)
     """
     gateways = netifaces.gateways()
+
+    # Formato netifaces original
     if 'default' in gateways and netifaces.AF_INET in gateways['default']:
         return gateways['default'][netifaces.AF_INET][0]
+
+    # Formato netifaces2 — buscar entrada IPv4 marcada como default
+    for family, entries in gateways.items():
+        if getattr(family, 'value', family) != 2:  # 2 = AF_INET
+            continue
+        for entry in entries:
+            if entry[2]:  # is_default
+                return entry[0]
+
     return None
 
 
