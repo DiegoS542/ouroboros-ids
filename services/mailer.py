@@ -1,12 +1,3 @@
-"""
-services/mailer.py
-Ouroboros IDS — Módulo de alertas por correo
-Responsable: Jaime
-
-Este módulo envía correos de alerta en formato HTML estilizado al administrador.
-Soporta recarga dinámica de credenciales si se modifican desde el dashboard.
-"""
-
 import smtplib
 from datetime import datetime
 from email.mime.text import MIMEText
@@ -15,10 +6,6 @@ from config.settings import get_smtp_credentials
 
 
 def _conectar_smtp():
-    """
-    Establece conexión SMTP recargando credenciales desde .env en cada llamada.
-    Retorna el servidor conectado o None si falla.
-    """
     creds = get_smtp_credentials()
 
     if not creds["email"] or not creds["password"]:
@@ -33,12 +20,9 @@ def _conectar_smtp():
     except Exception as e:
         print(f"[-] Error de conexión SMTP: {e}")
         return None
-    
-    
+
+
 def _generar_html_base(titulo, color_banner, contenido_tabla, nota_adicional=""):
-    """
-    Estructura visual estandarizada en HTML para los correos del IDS.
-    """
     return f"""
     <html>
     <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; padding: 20px; margin: 0;">
@@ -64,12 +48,9 @@ def _generar_html_base(titulo, color_banner, contenido_tabla, nota_adicional="")
 
 
 def enviar_alerta_whitelist(ip, mac, detalle=""):
-    """
-    Recibe los datos del host sospechoso y envía la alerta al administrador.
-    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     asunto = "[Ouroboros] Alerta — Dispositivo no autorizado"
-    color_advertencia = "#f39c12" 
+    color_advertencia = "#f39c12"
 
     tabla = f"""
         <tr style="background-color: #f8f9fa;">
@@ -101,7 +82,7 @@ def enviar_alerta_whitelist(ip, mac, detalle=""):
     """
 
     html_content = _generar_html_base("⚠️ DISPOSITIVO NO REGISTRADO", color_advertencia, tabla, nota)
-    
+
     resultado = _conectar_smtp()
     if not resultado:
         return False
@@ -123,12 +104,9 @@ def enviar_alerta_whitelist(ip, mac, detalle=""):
 
 
 def enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa):
-    """
-    Envía un correo de emergencia ante conexiones a IPs comprometidas.
-    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     asunto = "[Ouroboros] 🚨 EMERGENCIA — Conexión a IP peligrosa"
-    color_peligro = "#e74c3c" 
+    color_peligro = "#e74c3c"
 
     tabla = f"""
         <tr style="background-color: #f8f9fa;">
@@ -184,12 +162,9 @@ def enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa):
 def enviar_reporte_forense(ip_origen, mac_origen, ip_peligrosa,
                            tipo_riesgo, score_abuso, pais,
                            isp, correo_abuso):
-    """
-    Envía un informe forense detallado estructurando las consultas de las APIs.
-    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     asunto = f"[Ouroboros] Reporte Forense — {ip_peligrosa}"
-    color_forense = "#2c3e50" 
+    color_forense = "#2c3e50"
 
     tabla = f"""
         <tr style="background-color: #f8f9fa;">

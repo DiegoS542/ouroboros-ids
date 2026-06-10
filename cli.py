@@ -1,36 +1,3 @@
-"""
-cli.py
-Ouroboros IDS — Interfaz de administración en línea de comandos
-
-Comandos disponibles:
-    devices  list                  — lista dispositivos conocidos
-    devices  authorize <mac>       — autoriza un dispositivo (aplica en caliente)
-    devices  block <mac>           — revoca autorización (aplica en caliente)
-    devices  clear                 — elimina todos los dispositivos conocidos
-
-    blacklist list                 — muestra IPs en blacklist.txt
-    blacklist add <ip>             — agrega IP a blacklist.txt
-    blacklist remove <ip>          — elimina IP de blacklist.txt
-
-    feeds list                     — lista feeds de IPs peligrosas
-    feeds add <nombre> <url>       — registra un nuevo feed
-    feeds enable <id>              — activa un feed por id
-    feeds disable <id>             — desactiva un feed por id
-
-    status                         — resumen general de contadores
-    dns <ip>                       — últimas 20 consultas DNS de una IP
-
-Uso (instalado vía pip install -e .):
-    ouroboros status
-    ouroboros devices list
-    ouroboros blacklist add 1.2.3.4
-
-Uso directo:
-    python cli.py status
-
-No requiere sudo — solo accede a SQLite y archivos locales.
-"""
-
 import argparse
 import ipaddress
 import os
@@ -46,20 +13,13 @@ RELOAD_FLAG    = BASE_DIR / "data" / ".reload_blacklist"
 
 
 def _señalar_recarga():
-    """Toca el archivo-señal para que el sniffer recargue la blacklist en ~5 s."""
     try:
         RELOAD_FLAG.touch()
     except OSError as e:
         print(f"Advertencia: no se pudo crear la señal de recarga ({e}).")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 def _conn():
-    """
-    Abre conexión SQLite con acceso a columnas por nombre.
-    Si la BD no existe o no tiene tablas, termina con mensaje claro.
-    """
     if not DB_PATH.exists():
         print("Error: la base de datos no existe. Arranca el IDS primero con: sudo ouroboros")
         sys.exit(1)
@@ -75,28 +35,20 @@ def _conn():
 
 
 def _fecha(iso):
-    """Formatea timestamp ISO a 'YYYY-MM-DD HH:MM:SS'. Retorna '—' si es None."""
     return (iso or "—")[:19].replace("T", " ")
 
 
 def _salir_error(msg):
-    """Imprime error y termina con código 1."""
     print(f"Error: {msg}")
     sys.exit(1)
 
 
 def _require_write(path: Path):
-    """
-    Verifica que el proceso tenga permisos de escritura sobre path.
-    Si no los tiene, muestra el comando equivalente con sudo y termina.
-    """
     target = path if path.exists() else path.parent
     if not os.access(target, os.W_OK):
         print("Error: este comando requiere privilegios de administrador.")
         sys.exit(1)
 
-
-# ── devices list ──────────────────────────────────────────────────────────────
 
 def cmd_devices_list(_args):
     with _conn() as conn:
@@ -121,8 +73,6 @@ def cmd_devices_list(_args):
         print(f"{f['ip']:<{col_ip}}  {mac:<{col_mac}}  {_fecha(f['ultimo_visto']):<20}  {estado}")
 
 
-# ── devices authorize ─────────────────────────────────────────────────────────
-
 def cmd_devices_authorize(args):
     _require_write(DB_PATH)
     mac = args.mac.strip()
@@ -137,8 +87,6 @@ def cmd_devices_authorize(args):
     db_writer.autorizar_dispositivo(fila["mac"])
     print(f"✓ Dispositivo {fila['mac'].upper()} autorizado.")
 
-
-# ── devices block ─────────────────────────────────────────────────────────────
 
 def cmd_devices_block(args):
     _require_write(DB_PATH)
@@ -159,8 +107,6 @@ def cmd_devices_block(args):
 
     print(f"✓ Autorización de {fila['mac'].upper()} revocada.")
 
-
-# ── devices clear ─────────────────────────────────────────────────────────────
 
 def cmd_devices_clear(_args):
     _require_write(DB_PATH)
@@ -186,13 +132,7 @@ def cmd_devices_clear(_args):
     print("⚠ Reiniciar Ouroboros para repoblar via ARP scan.")
 
 
-# ── blacklist helpers ─────────────────────────────────────────────────────────
-
 def _leer_blacklist_raw():
-    """
-    Lee blacklist.txt línea por línea.
-    Retorna lista de tuplas (linea_original, ip_parseada_o_None).
-    """
     if not BLACKLIST_PATH.exists():
         return []
     resultado = []
@@ -211,11 +151,8 @@ def _leer_blacklist_raw():
 
 
 def _ips_blacklist():
-    """Retorna set de IPs activas en blacklist.txt."""
     return {ip for _, ip in _leer_blacklist_raw() if ip}
 
-
-# ── blacklist list ────────────────────────────────────────────────────────────
 
 def cmd_blacklist_list(_args):
     ips = sorted(_ips_blacklist())
@@ -229,8 +166,6 @@ def cmd_blacklist_list(_args):
         print(ip)
     print(f"\n{len(ips)} IP(s) en total")
 
-
-# ── blacklist add ─────────────────────────────────────────────────────────────
 
 def cmd_blacklist_add(args):
     _require_write(BLACKLIST_PATH)
@@ -250,8 +185,6 @@ def cmd_blacklist_add(args):
     print(f"✓ IP {ip} agregada a blacklist.txt — el sniffer la aplicará en ~5 s.")
 
 
-# ── blacklist remove ──────────────────────────────────────────────────────────
-
 def cmd_blacklist_remove(args):
     _require_write(BLACKLIST_PATH)
     ip = args.ip.strip()
@@ -260,7 +193,6 @@ def cmd_blacklist_remove(args):
     if ip not in {p for _, p in entradas if p}:
         _salir_error(f"la IP {ip} no está en la lista negra.")
 
-    # Reescribe el archivo conservando comentarios y demás líneas
     nuevas = [linea for linea, parsed in entradas if parsed != ip]
     with open(BLACKLIST_PATH, "w") as f:
         f.writelines(nuevas)
@@ -268,8 +200,6 @@ def cmd_blacklist_remove(args):
     _señalar_recarga()
     print(f"✓ IP {ip} eliminada de blacklist.txt — el sniffer la aplicará en ~5 s.")
 
-
-# ── feeds list ────────────────────────────────────────────────────────────────
 
 def cmd_feeds_list(_args):
     with _conn() as conn:
@@ -293,8 +223,6 @@ def cmd_feeds_list(_args):
         print(f"{f['id']:<4}  {f['nombre']:<{col_nombre}}  {activo:<7}  {update:<20}  {url}")
 
 
-# ── feeds add ─────────────────────────────────────────────────────────────────
-
 def cmd_feeds_add(args):
     _require_write(DB_PATH)
     nombre = args.nombre.strip()
@@ -315,9 +243,6 @@ def cmd_feeds_add(args):
 
     _señalar_recarga()
     print(f"✓ Feed '{nombre}' registrado y activado — el sniffer lo descargará en ~5 s.")
-
-
-# ── feeds enable / disable ────────────────────────────────────────────────────
 
 
 def cmd_feeds_enable(args):
@@ -362,8 +287,6 @@ def cmd_feeds_remove(args):
     print(f"✓ Feed '{fila['nombre']}' eliminado.")
 
 
-# ── help ─────────────────────────────────────────────────────────────────────
-
 def cmd_help(_args):
     print("""
 Ouroboros IDS — Comandos disponibles
@@ -396,8 +319,6 @@ Ouroboros IDS — Comandos disponibles
 """)
 
 
-# ── status ────────────────────────────────────────────────────────────────────
-
 def cmd_status(_args):
     with _conn() as conn:
         total_disp  = conn.execute("SELECT COUNT(*) FROM dispositivos_conocidos").fetchone()[0]
@@ -424,13 +345,9 @@ def cmd_status(_args):
     print(linea)
 
 
-# ── dns ───────────────────────────────────────────────────────────────────────
-
 def cmd_dns(args):
     ip = args.ip.strip()
     with _conn() as conn:
-        # Agrupa por dominio para evitar duplicados (el sniffer captura
-        # pregunta y respuesta del mismo DNS). Muestra la visita más reciente.
         filas = conn.execute(
             "SELECT dominio, MAX(timestamp) AS ultima_vez "
             "FROM bitacora_dns WHERE ip_origen = ? "
@@ -450,8 +367,6 @@ def cmd_dns(args):
         print(f"{f['dominio']:<{col_dom}}  {_fecha(f['ultima_vez'])}")
 
 
-# ── Parseo de argumentos ──────────────────────────────────────────────────────
-
 def _build_parser():
     parser = argparse.ArgumentParser(
         prog="ouroboros",
@@ -461,7 +376,6 @@ def _build_parser():
     sub = parser.add_subparsers(dest="comando", metavar="comando")
     sub.required = True
 
-    # ── devices ──────────────────────────────────────────────────────────────
     p_dev = sub.add_parser("devices", help="Gestión de dispositivos detectados en la red")
     sub_dev = p_dev.add_subparsers(dest="subcomando", metavar="subcomando")
     sub_dev.required = True
@@ -476,7 +390,6 @@ def _build_parser():
 
     sub_dev.add_parser("clear", help="Elimina todos los dispositivos conocidos (con confirmación)")
 
-    # ── blacklist ─────────────────────────────────────────────────────────────
     p_bl = sub.add_parser("blacklist", help="Gestión de la lista negra local (blacklist.txt)")
     sub_bl = p_bl.add_subparsers(dest="subcomando", metavar="subcomando")
     sub_bl.required = True
@@ -489,7 +402,6 @@ def _build_parser():
     p_bl_rem = sub_bl.add_parser("remove", help="Elimina una IP de blacklist.txt")
     p_bl_rem.add_argument("ip", help="Dirección IP a eliminar")
 
-    # ── feeds ─────────────────────────────────────────────────────────────────
     p_feeds = sub.add_parser("feeds", help="Gestión de feeds de IPs peligrosas")
     sub_feeds = p_feeds.add_subparsers(dest="subcomando", metavar="subcomando")
     sub_feeds.required = True
@@ -509,20 +421,15 @@ def _build_parser():
     p_feeds_rem = sub_feeds.add_parser("remove", help="Elimina un feed permanentemente")
     p_feeds_rem.add_argument("id", type=int, help="ID del feed")
 
-    # ── status ────────────────────────────────────────────────────────────────
     sub.add_parser("status", help="Resumen general: contadores de todas las tablas")
 
-    # ── dns ───────────────────────────────────────────────────────────────────
     p_dns = sub.add_parser("dns", help="Últimas 20 consultas DNS de una IP específica")
     p_dns.add_argument("ip", help="Dirección IP a consultar")
 
-    # ── help ──────────────────────────────────────────────────────────────────
     sub.add_parser("help", help="Muestra todos los comandos disponibles")
 
     return parser
 
-
-# ── Tabla de dispatch ─────────────────────────────────────────────────────────
 
 _DISPATCH = {
     "devices": {
@@ -547,12 +454,6 @@ _DISPATCH = {
 
 
 def despachar():
-    """
-    Punto de entrada público. Parsea sys.argv y ejecuta el comando.
-    Llamado por ouroboros.main() cuando detecta un subcomando de administración,
-    y también directamente cuando se invoca cli.py standalone.
-    No llama a sys.exit() al terminar normalmente — solo _salir_error() en errores.
-    """
     parser = _build_parser()
     args   = parser.parse_args()
 
@@ -567,7 +468,6 @@ def despachar():
 
 
 def main():
-    """Wrapper para uso standalone: python cli.py <comando>"""
     despachar()
 
 

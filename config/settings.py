@@ -1,31 +1,20 @@
-"""
-config/settings.py
-Ouroboros IDS — Módulo de configuración central
-Lee variables de entorno desde .env y las expone al resto del proyecto.
-"""
-
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Busca el .env en la raíz del proyecto (un nivel arriba de /config)
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-# ── Correo ──────────────────────────────────────────────
 SMTP_EMAIL    = os.getenv("SMTP_EMAIL")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 SMTP_HOST     = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT     = int(os.getenv("SMTP_PORT", 587))
 ADMIN_EMAIL   = os.getenv("ADMIN_EMAIL")
 
-# ── APIs externas ────────────────────────────────────────
 ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY")
 
-# ── Base de datos ────────────────────────────────────────
 DB_PATH = BASE_DIR / os.getenv("DB_PATH", "data/ouroboros.db")
 
-# ── Validación al arrancar ───────────────────────────────
 REQUIRED = {
     "SMTP_EMAIL":     SMTP_EMAIL,
     "SMTP_PASSWORD":  SMTP_PASSWORD,
@@ -43,10 +32,6 @@ def validate():
 
 
 def get_smtp_credentials():
-    """
-    Recarga el .env y retorna las credenciales SMTP actuales.
-    Permite que el mailer detecte cambios de credenciales sin reiniciar el sistema.
-    """
     load_dotenv(BASE_DIR / ".env", override=True)
     return {
         "email":    os.getenv("SMTP_EMAIL"),

@@ -1,9 +1,3 @@
-"""
-core/feed_updater.py
-Ouroboros IDS — Descarga y unificación de feeds de IPs peligrosas
-Combina fuentes remotas (configuradas en feed_sources) con blacklist.txt local.
-"""
-
 import ipaddress
 import sqlite3
 from datetime import datetime
@@ -23,11 +17,6 @@ def _get_connection():
 
 
 def _parsear_feed(texto):
-    """
-    Extrae IPs individuales válidas de un texto de feed.
-    Ignora líneas vacías, comentarios (#) y entradas que no sean IPs individuales
-    (como rangos CIDR o texto libre).
-    """
     ips = set()
     for linea in texto.splitlines():
         linea = linea.strip()
@@ -37,15 +26,11 @@ def _parsear_feed(texto):
             ipaddress.ip_address(linea)
             ips.add(linea)
         except ValueError:
-            pass  # CIDR, hostname, texto libre — ignorar
+            pass
     return ips
 
 
 def _cargar_feeds_remotos():
-    """
-    Consulta feed_sources WHERE activo = 1 y descarga cada feed.
-    Retorna un set con todas las IPs válidas encontradas.
-    """
     ips = set()
 
     try:
@@ -65,7 +50,6 @@ def _cargar_feeds_remotos():
             nuevas = _parsear_feed(respuesta.text)
             ips.update(nuevas)
 
-            # Registrar descarga exitosa
             from core.db_writer import actualizar_ultimo_update_feed
             actualizar_ultimo_update_feed(feed_id)
 
@@ -77,10 +61,6 @@ def _cargar_feeds_remotos():
 
 
 def _cargar_blacklist_local():
-    """
-    Lee blacklist.txt y retorna un set de IPs válidas.
-    Ignora líneas vacías, comentarios y entradas no válidas.
-    """
     ips = set()
     try:
         with open(BLACKLIST_PATH, "r") as f:
@@ -99,12 +79,6 @@ def _cargar_blacklist_local():
 
 
 def cargar_blacklist_completa():
-    """
-    Función pública principal del módulo.
-    Descarga todos los feeds activos y fusiona con blacklist.txt local.
-    Nunca lanza excepciones — si todo falla, retorna un set vacío.
-    Retorna un set de strings con todas las IPs peligrosas conocidas.
-    """
     try:
         ips_remotas = _cargar_feeds_remotos()
         ips_locales = _cargar_blacklist_local()
