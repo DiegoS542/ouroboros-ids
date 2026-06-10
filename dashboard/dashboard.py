@@ -357,7 +357,7 @@ BASE = """
   {% endwith %}
   {{ contenido|safe }}
 </main>
-<footer>Ouroboros IDS — Dashboard de administración · sesión JWT ({{ TOKEN_MIN }} min) · auto-refresh inteligente (se pausa mientras escribes)</footer>
+<footer></footer>
 <script>
   // Auto-refresh inteligente: recarga cada 15 s SOLO si el usuario no está
   // escribiendo y ningún campo tiene contenido — así los formularios
@@ -589,7 +589,10 @@ def dispositivos():
 
     def estado(f):
         if f["autorizado"]:
-            return '<span class="badge verde">Autorizado</span>'
+            boton = f"""<form class="inline" method="post"
+                         action="{url_for('desautorizar', mac=f['mac'])}">
+                         <button type="submit" style="background:var(--red)">Revocar</button></form>"""
+            return f'<span class="badge verde">Autorizado</span> {boton}'
         boton = f"""<form class="inline" method="post"
                      action="{url_for('autorizar', mac=f['mac'])}">
                      <button type="submit">Autorizar</button></form>"""
@@ -620,6 +623,18 @@ def dispositivos():
 def autorizar(mac):
     db_writer.autorizar_dispositivo(mac)
     flash(f"Dispositivo {mac} autorizado.")
+    return redirect(url_for("dispositivos"))
+
+
+@app.route("/desautorizar/<mac>", methods=["POST"])
+@requiere_token
+def desautorizar(mac):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE dispositivos_conocidos SET autorizado = 0 WHERE mac = ?", (mac,)
+        )
+        conn.commit()
+    flash(f"Autorización de {mac} revocada.")
     return redirect(url_for("dispositivos"))
 
 
