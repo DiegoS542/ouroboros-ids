@@ -37,6 +37,15 @@ from config.settings import DB_PATH, BASE_DIR
 from core import db_writer
 
 BLACKLIST_PATH = BASE_DIR / "data" / "blacklist.txt"
+RELOAD_FLAG    = BASE_DIR / "data" / ".reload_blacklist"
+
+
+def _señalar_recarga():
+    """Toca el archivo-señal para que el sniffer recargue la blacklist en ~5 s."""
+    try:
+        RELOAD_FLAG.touch()
+    except OSError as e:
+        print(f"Advertencia: no se pudo crear la señal de recarga ({e}).")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -180,8 +189,8 @@ def cmd_blacklist_add(args):
     with open(BLACKLIST_PATH, "a") as f:
         f.write(f"{ip}\n")
 
-    print(f"✓ IP {ip} agregada a blacklist.txt")
-    print("⚠ Reiniciar Ouroboros para aplicar los cambios.")
+    _señalar_recarga()
+    print(f"✓ IP {ip} agregada a blacklist.txt — el sniffer la aplicará en ~5 s.")
 
 
 # ── blacklist remove ──────────────────────────────────────────────────────────
@@ -198,8 +207,8 @@ def cmd_blacklist_remove(args):
     with open(BLACKLIST_PATH, "w") as f:
         f.writelines(nuevas)
 
-    print(f"✓ IP {ip} eliminada de blacklist.txt")
-    print("⚠ Reiniciar Ouroboros para aplicar los cambios.")
+    _señalar_recarga()
+    print(f"✓ IP {ip} eliminada de blacklist.txt — el sniffer la aplicará en ~5 s.")
 
 
 # ── feeds list ────────────────────────────────────────────────────────────────
@@ -245,8 +254,8 @@ def cmd_feeds_add(args):
         except sqlite3.IntegrityError:
             _salir_error(f"la URL '{url}' ya está registrada.")
 
-    print(f"✓ Feed '{nombre}' registrado y activado.")
-    print("⚠ Reiniciar Ouroboros para aplicar los cambios.")
+    _señalar_recarga()
+    print(f"✓ Feed '{nombre}' registrado y activado — el sniffer lo descargará en ~5 s.")
 
 
 # ── feeds enable / disable ────────────────────────────────────────────────────
@@ -266,8 +275,8 @@ def cmd_feeds_enable(args):
             _salir_error(f"no existe un feed con id {args.id}.")
         conn.execute("UPDATE feed_sources SET activo = 1 WHERE id = ?", (args.id,))
         conn.commit()
-    print(f"✓ Feed '{fila['nombre']}' activado.")
-    print("⚠ Reiniciar Ouroboros para aplicar los cambios.")
+    _señalar_recarga()
+    print(f"✓ Feed '{fila['nombre']}' activado — el sniffer lo aplicará en ~5 s.")
 
 
 def cmd_feeds_disable(args):
@@ -279,8 +288,8 @@ def cmd_feeds_disable(args):
             _salir_error(f"no existe un feed con id {args.id}.")
         conn.execute("UPDATE feed_sources SET activo = 0 WHERE id = ?", (args.id,))
         conn.commit()
-    print(f"✓ Feed '{fila['nombre']}' desactivado.")
-    print("⚠ Reiniciar Ouroboros para aplicar los cambios.")
+    _señalar_recarga()
+    print(f"✓ Feed '{fila['nombre']}' desactivado — el sniffer lo aplicará en ~5 s.")
 
 
 # ── status ────────────────────────────────────────────────────────────────────
