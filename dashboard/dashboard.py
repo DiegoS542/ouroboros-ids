@@ -243,14 +243,12 @@ def buscar_usuario(usuario):
 # Los feeds remotos los descarga core/feed_updater al arrancar el sniffer;
 # aquí solo se administra la lista local y las fuentes de feeds (tabla).
 
-def agregar_ip_local(ip, comentario=""):
+def agregar_ip_local(ip):
     """Agrega una IP a blacklist.txt. Retorna False si ya estaba."""
     ip = ip.strip()
     if ip in _cargar_blacklist_local():
         return False
     with open(BLACKLIST_PATH, "a") as f:
-        if comentario:
-            f.write(f"\n# {comentario}\n")
         f.write(f"{ip}\n")
     return True
 
@@ -603,11 +601,6 @@ def dispositivos():
         <input type="text" name="mac" placeholder="MAC (AA:BB:CC:DD:EE:FF)" required>
         <input type="submit" value="Autorizar MAC">
       </form>
-      <p style="color:var(--dim); font-size:12px; margin-top:10px">
-        La MAC es el identificador real del dispositivo (Capa 2) — la IP puede
-        cambiar por DHCP, así que el sniffer la detecta y actualiza solo.
-        La whitelist vive en la tabla <code>dispositivos_conocidos</code> de la BD,
-        la misma que consulta el sniffer con <code>es_autorizado()</code>.</p>
     </div>"""
 
     t = tabla(filas,
@@ -664,10 +657,15 @@ def alertas():
 def dns():
     filtro = request.args.get("ip", "").strip()
     if filtro:
-        filas = query("""SELECT * FROM bitacora_dns WHERE ip_origen = ?
+        filas = query("""SELECT ip_origen, dominio, MAX(timestamp) AS timestamp
+                         FROM bitacora_dns WHERE ip_origen = ?
+                         GROUP BY ip_origen, dominio
                          ORDER BY timestamp DESC LIMIT 300""", (filtro,))
     else:
-        filas = query("SELECT * FROM bitacora_dns ORDER BY timestamp DESC LIMIT 300")
+        filas = query("""SELECT ip_origen, dominio, MAX(timestamp) AS timestamp
+                         FROM bitacora_dns
+                         GROUP BY ip_origen, dominio
+                         ORDER BY timestamp DESC LIMIT 300""")
 
     buscador = f"""
     <div class="alta">
@@ -702,7 +700,6 @@ def blacklist():
       <h2>Agregar IP a la lista negra local</h2>
       <form method="post" action="{url_for('blacklist_agregar')}">
         <input type="text" name="ip" placeholder="IP (ej. 91.92.109.196)" required>
-        <input type="text" name="comentario" placeholder="Motivo (ej. C2 Server)">
         <input type="submit" value="Agregar">
       </form>
       <p style="color:var(--dim); font-size:12px; margin-top:10px">
@@ -824,14 +821,13 @@ def blacklist():
 def blacklist_agregar():
     import ipaddress
     ip = request.form["ip"].strip()
-    comentario = request.form.get("comentario", "").strip()
     try:
         ipaddress.ip_address(ip)
     except ValueError:
         flash(f"'{ip}' no es una IP válida.")
         return redirect(url_for("blacklist"))
 
-    if agregar_ip_local(ip, comentario):
+    if agregar_ip_local(ip):
         señalar_recarga()
         flash(f"IP {ip} agregada a la lista negra local — el sniffer la aplicará en ~5 s.")
     else:
@@ -1022,9 +1018,7 @@ def config():
         <input type="submit" value="Cambiar correo">
       </form>
       <p style="color:var(--dim); font-size:12px; margin-top:10px">
-        Identificación: usuario del login · Autenticación: JWT firmado (HS256) ·
-        Autorización: claim rol=admin del token.
-        El cambio aplica de inmediato — el mailer recarga el .env en cada envío.</p>
+        El cambio aplica de inmediato.</p>
     </div>"""
     return render("config", "Configuración", contenido)
 
