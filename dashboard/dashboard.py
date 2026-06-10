@@ -1,39 +1,3 @@
-"""
-dashboard.py
-Ouroboros IDS — Dashboard web de administración
-Interfaz Flask para consultar las vistas de la base de datos y
-administrar el sistema sin tocar archivos manualmente.
-
-Seguridad (Identificación / Autenticación / Autorización):
-    - Login obligatorio al acceder (usuario + contraseña del .env).
-    - Al autenticarse se emite un JWT firmado (HS256) con el claim rol=admin
-      y expiración de 30 minutos, guardado en cookie HttpOnly.
-    - Toda vista y acción (incluido el cambio del correo de alertas)
-      valida el token antes de ejecutarse.
-
-Vistas:
-    /login        Inicio de sesión (emite el JWT)
-    /             Resumen general (contadores y últimas alertas)
-    /dispositivos Dispositivos detectados + autorización por MAC (directo a BD)
-    /alertas      Alertas de dispositivos no autorizados (Capa 2/3)
-    /dns          Bitácora de dominios visitados
-    /blacklist    Lista negra local + feeds remotos + detecciones forenses
-    /config       Cambio del correo admin que recibe las alertas
-    /logout       Cierra sesión (borra el token)
-
-Uso (desde la raíz del proyecto):
-    pip install flask python-dotenv PyJWT
-    python dashboard.py        →  http://127.0.0.1:5000
-
-Variables requeridas en .env:
-    DASHBOARD_USER=admin
-    DASHBOARD_PASSWORD=tu_clave
-    JWT_SECRET=(se genera solo si falta)
-
-Funciona aunque el sniffer NO esté corriendo: solo lee la base SQLite.
-Para probar con datos falsos:  python seed_demo.py
-"""
-
 import html
 import re
 import secrets
@@ -43,11 +7,9 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
-# El dashboard vive en /dashboard — agregar la raíz del proyecto al path
-# para que los imports de config/ y core/ funcionen desde cualquier lugar.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import jwt  # PyJWT
+import jwt
 from flask import (Flask, render_template_string, request, redirect,
                    url_for, flash, make_response)
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -58,28 +20,22 @@ from core.feed_updater import BLACKLIST_PATH, _cargar_blacklist_local
 
 ENV_PATH = BASE_DIR / ".env"
 
-# Archivo-señal: al tocarlo, el sniffer recarga la blacklist en caliente
-# (lo vigila un hilo en core/sniffer.py cada 5 segundos).
 RELOAD_FLAG = BASE_DIR / "data" / ".reload_blacklist"
 
 
 def señalar_recarga():
-    """Pide al sniffer que recargue la blacklist sin reiniciar Ouroboros."""
     try:
         RELOAD_FLAG.touch()
     except OSError as e:
         print(f"[Dashboard] No se pudo crear la señal de recarga: {e}")
 
 app = Flask(__name__)
-app.secret_key = "ouroboros-dashboard"  # solo para mensajes flash locales
+app.secret_key = "ouroboros-dashboard"
 
-TOKEN_MINUTOS = 30  # vigencia del JWT
+TOKEN_MINUTOS = 30
 
-
-# ── Manejo del .env ──────────────────────────────────────────────────────────
 
 def leer_env_var(clave):
-    """Lee el valor actual de una variable directamente del .env."""
     if not ENV_PATH.exists():
         return ""
     for linea in ENV_PATH.read_text().splitlines():
@@ -89,7 +45,6 @@ def leer_env_var(clave):
 
 
 def escribir_env_var(clave, valor):
-    """Actualiza (o agrega) una variable en el .env sin tocar las demás."""
     lineas = ENV_PATH.read_text().splitlines() if ENV_PATH.exists() else []
     encontrada = False
     for i, linea in enumerate(lineas):
@@ -103,10 +58,6 @@ def escribir_env_var(clave, valor):
 
 
 def obtener_jwt_secret():
-    """
-    Lee JWT_SECRET del .env. Si no existe, genera uno aleatorio y lo
-    persiste — así el secreto nunca queda hardcoded en el código.
-    """
     secreto = leer_env_var("JWT_SECRET")
     if not secreto:
         secreto = secrets.token_hex(32)
@@ -117,18 +68,14 @@ def obtener_jwt_secret():
 
 JWT_SECRET = obtener_jwt_secret()
 
-
-# ── JWT: emisión y validación ────────────────────────────────────────────────
-
 ROLES_VALIDOS = ("admin", "operador")
 
 
 def crear_token(usuario, rol, cambiar_pwd=False):
-    """Emite un JWT firmado con el rol del usuario y expiración."""
     payload = {
-        "sub": usuario,                          # identificación
-        "rol": rol,                              # autorización
-        "pwd": 1 if cambiar_pwd else 0,          # debe cambiar contraseña
+        "sub": usuario,
+        "rol": rol,
+        "pwd": 1 if cambiar_pwd else 0,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=TOKEN_MINUTOS),
         "iat": datetime.now(timezone.utc),
     }
@@ -136,7 +83,6 @@ def crear_token(usuario, rol, cambiar_pwd=False):
 
 
 def validar_token():
-    """Retorna el payload si la cookie trae un JWT válido, o None."""
     token = request.cookies.get("token")
     if not token:
         return None
@@ -150,11 +96,6 @@ def validar_token():
 
 
 def requiere_token(f):
-    """
-    Decorador: exige JWT válido o redirige al login.
-    Si el token trae la marca de contraseña temporal, obliga a cambiarla
-    antes de poder usar cualquier otra vista.
-    """
     @wraps(f)
     def wrapper(*args, **kwargs):
         datos = validar_token()
@@ -167,7 +108,6 @@ def requiere_token(f):
 
 
 def requiere_admin(f):
-    """Decorador: además del token, exige rol admin (autorización)."""
     @wraps(f)
     def wrapper(*args, **kwargs):
         datos = validar_token()
@@ -182,10 +122,7 @@ def requiere_admin(f):
     return wrapper
 
 
-# ── Acceso a datos (solo lectura sobre la misma BD del IDS) ──────────────────
-
 def query(sql, params=()):
-    """Consulta de solo lectura. Retorna filas como diccionarios."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
@@ -197,16 +134,7 @@ def scalar(sql, params=()):
         return row[0] if row else 0
 
 
-# ── Usuarios: tabla, seed inicial y helpers ──────────────────────────────────
-
 def init_usuarios():
-    """
-    Crea la tabla de usuarios si no existe. Si está vacía, genera una
-    contraseña aleatoria para el admin, la hashea y la persiste.
-    Retorna la contraseña en texto plano solo en ese primer arranque,
-    None si el admin ya existía. El usuario está marcado para cambiar
-    la contraseña en el primer login.
-    """
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
@@ -229,23 +157,17 @@ def init_usuarios():
                  datetime.now(timezone.utc).isoformat())
             )
             conn.commit()
-            return clave  # solo existe en texto plano este instante
+            return clave
 
     return None
 
 
 def buscar_usuario(usuario):
-    """Retorna el registro del usuario o None."""
     filas = query("SELECT * FROM usuarios WHERE usuario = ?", (usuario,))
     return filas[0] if filas else None
 
 
-# ── Gestión de blacklist.txt local ───────────────────────────────────────────
-# Los feeds remotos los descarga core/feed_updater al arrancar el sniffer;
-# aquí solo se administra la lista local y las fuentes de feeds (tabla).
-
 def agregar_ip_local(ip):
-    """Agrega una IP a blacklist.txt. Retorna False si ya estaba."""
     ip = ip.strip()
     if ip in _cargar_blacklist_local():
         return False
@@ -255,7 +177,6 @@ def agregar_ip_local(ip):
 
 
 def quitar_ip_local(ip):
-    """Elimina una IP de blacklist.txt. Retorna True si existía."""
     ip = ip.strip()
     with open(BLACKLIST_PATH, "r") as f:
         lineas = f.readlines()
@@ -267,14 +188,13 @@ def quitar_ip_local(ip):
     return True
 
 
-# ── Plantilla base ───────────────────────────────────────────────────────────
-
 BASE = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <title>Ouroboros IDS — {{ titulo }}</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐍</text></svg>">
 <style>
   :root {
     --bg:#0d1117; --panel:#161b22; --border:#30363d; --txt:#e6edf3;
@@ -301,6 +221,7 @@ BASE = """
   .card { background:var(--panel); border:1px solid var(--border);
           border-radius:10px; padding:16px; display:block;
           text-decoration:none; color:var(--txt);
+          text-align:center;
           transition:transform .15s, border-color .15s; }
   a.card:hover { border-color:var(--accent); transform:translateY(-3px);
                  cursor:pointer; }
@@ -397,6 +318,7 @@ LOGIN = """
 <head>
 <meta charset="utf-8">
 <title>Ouroboros IDS — Iniciar sesión</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐍</text></svg>">
 <style>
   :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --txt:#e6edf3;
           --dim:#8b949e; --red:#f85149; --accent:#7c3aed; }
@@ -446,7 +368,6 @@ def render(vista, titulo, contenido):
 
 
 def tabla(filas, columnas, formato=None):
-    """Genera una tabla HTML a partir de filas (lista de dicts)."""
     if not filas:
         return '<div class="vacio">Sin registros todavía — corre seed_demo.py para datos de prueba.</div>'
     formato = formato or {}
@@ -464,11 +385,8 @@ def tabla(filas, columnas, formato=None):
 
 
 def fecha(iso):
-    """Acorta el timestamp ISO para mostrarlo."""
     return (iso or "")[:19].replace("T", " ")
 
-
-# ── Login / Logout ───────────────────────────────────────────────────────────
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -476,7 +394,6 @@ def login():
         usuario = request.form["usuario"].strip()
         clave   = request.form["clave"].strip()
 
-        # Identificación + Autenticación contra la tabla usuarios (hash PBKDF2)
         u = buscar_usuario(usuario)
         if u and check_password_hash(u["password_hash"], clave):
             debe_cambiar = bool(u["cambiar_pwd"])
@@ -484,7 +401,7 @@ def login():
             resp = make_response(redirect(url_for(destino)))
             resp.set_cookie(
                 "token", crear_token(u["usuario"], u["rol"], debe_cambiar),
-                httponly=True,            # JS no puede leer el token
+                httponly=True,
                 samesite="Lax",
                 max_age=TOKEN_MINUTOS * 60,
             )
@@ -522,7 +439,6 @@ def cambiar_password():
                     (generate_password_hash(nueva), usuario)
                 )
                 conn.commit()
-            # Re-emitir token sin la marca de contraseña temporal
             resp = make_response(redirect(url_for("resumen")))
             resp.set_cookie(
                 "token", crear_token(usuario, datos["rol"], False),
@@ -561,8 +477,6 @@ def logout():
     return resp
 
 
-# ── Vistas (todas protegidas con JWT) ────────────────────────────────────────
-
 @app.route("/")
 @requiere_token
 def resumen():
@@ -577,10 +491,8 @@ def resumen():
     ultimas = query("""SELECT timestamp, ip_origen, ip_peligrosa
                        FROM alertas_blacklist ORDER BY timestamp DESC LIMIT 5""")
 
-    # Tarjetas-atajo: cada una lleva a su vista al hacer clic.
-    # La de IPs peligrosas entra en modo alarma (roja, pulsante) si hay alertas.
     peligro = "peligro" if alertas_bl > 0 else ""
-    icono_bl = "🚨 " if alertas_bl > 0 else ""
+    icono_bl = "" if alertas_bl > 0 else ""
     cards = f"""
     <div class="cards">
       <a class="card" href="{url_for('dispositivos')}" title="Ir a Dispositivos">
@@ -603,7 +515,7 @@ def resumen():
 
     panel_emergencias = f"""
     <div class="panel-peligro">
-      <h2>🚨 Últimas alertas de emergencia</h2>
+      <h2>Últimas alertas de emergencia</h2>
       {t2}
       <p style="margin-top:10px; font-size:13px">
         <a href="{url_for('blacklist')}" style="color:var(--red)">
@@ -680,8 +592,6 @@ def alta_whitelist():
         flash(f"'{mac}' no es una MAC válida (formato AA:BB:CC:DD:EE:FF).")
         return redirect(url_for("dispositivos"))
 
-    # Directo a la BD — la misma que consulta es_autorizado() del sniffer.
-    # IP placeholder: el sniffer la actualiza al ver tráfico de esa MAC.
     db_writer.registrar_y_autorizar("0.0.0.0", mac)
     flash(f"MAC {mac} autorizada en la lista blanca.")
     return redirect(url_for("dispositivos"))
@@ -734,7 +644,6 @@ def dns():
 @app.route("/blacklist")
 @requiere_token
 def blacklist():
-    # ── Lista local (editable) — los feeds remotos los descarga el sniffer ──
     ips_lista = sorted(_cargar_blacklist_local())
     filas_txt = [{"ip": ip} for ip in ips_lista]
 
@@ -759,7 +668,6 @@ def blacklist():
     t_txt = tabla(filas_txt, [("ip", "IP en blacklist.txt"), ("acc", "Acción")],
                   {"acc": quitar_btn})
 
-    # ── Fuentes de feeds remotos (tabla feed_sources) ──
     feeds = query("SELECT * FROM feed_sources ORDER BY id")
 
     def estado_feed(f):
@@ -790,7 +698,6 @@ def blacklist():
         (líneas con # se ignoran). Se descarga en caliente en ~5 s.</p>
     </div>"""
 
-    # ── Detecciones registradas con análisis forense ──
     filas = query("""
         SELECT a.timestamp, a.ip_origen, a.ip_peligrosa,
                COALESCE(f.tipo_riesgo,  '—') AS tipo_riesgo,
@@ -813,7 +720,6 @@ def blacklist():
                "score_abuso": lambda f: (f'<span class="mal">{f["score_abuso"]}</span>'
                                          if f["score_abuso"] != "—" else "—")})
 
-    # ── Pestañas: Lista local | Feeds remotos ──
     recarga_pendiente = RELOAD_FLAG.exists()
     aviso_recarga = ("""<div class="flash" style="border-color:var(--yellow);
                      color:var(--yellow); background:rgba(210,153,34,.12)">
@@ -855,7 +761,7 @@ def blacklist():
         document.getElementById('tab-feeds').style.display = (n==='feeds') ? '' : 'none';
         document.getElementById('btn-local').classList.toggle('activa', n==='local');
         document.getElementById('btn-feeds').classList.toggle('activa', n==='feeds');
-        location.hash = n;   // sobrevive al auto-refresh de la página
+        location.hash = n;
       }}
       if (location.hash === '#feeds') verTab('feeds');
     </script>"""
@@ -929,21 +835,18 @@ def feed_agregar():
         señalar_recarga()
         flash(f"Feed '{nombre}' agregado — el sniffer lo descargará en ~5 s.")
     except sqlite3.IntegrityError:
-        flash(f"Esa URL ya está registrada como feed.")  # url UNIQUE en la tabla
+        flash(f"Esa URL ya está registrada como feed.")
     return redirect(url_for("blacklist") + "#feeds")
 
 
 @app.route("/feeds/actualizar", methods=["POST"])
 @requiere_token
 def feeds_actualizar():
-    """Fuerza la recarga de feeds + lista local en el sniffer, sin reiniciar."""
     señalar_recarga()
     flash("Recarga solicitada — el sniffer descargará los feeds en ~5 s "
           "(si Ouroboros está corriendo).")
     return redirect(url_for("blacklist") + "#feeds")
 
-
-# ── Gestión de usuarios (solo rol admin) ─────────────────────────────────────
 
 @app.route("/usuarios")
 @requiere_admin
@@ -1049,8 +952,6 @@ def usuario_eliminar(user_id):
     return redirect(url_for("usuarios"))
 
 
-# ── Configuración: correo del admin que recibe las alertas ───────────────────
-
 @app.route("/config")
 @requiere_admin
 def config():
@@ -1087,10 +988,8 @@ def cambiar_admin():
 
 
 if __name__ == "__main__":
-    db_writer.init_db()   # crea tablas si no existen — funciona sin el sniffer
-    init_usuarios()       # tabla de cuentas + admin inicial del .env
+    db_writer.init_db()
+    init_usuarios()
 
-    # 0.0.0.0 = accesible desde otros dispositivos de la red local
-    # vía http://IP-del-servidor:5000 (asegúrate de abrir el puerto en el firewall)
     print("[Ouroboros] Dashboard en http://0.0.0.0:5000 — accesible en la red local")
     app.run(host="0.0.0.0", port=5000, debug=False)
