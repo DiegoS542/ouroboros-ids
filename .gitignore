@@ -12,8 +12,10 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Base de datos local
+# Base de datos local (y archivos auxiliares WAL que SQLite genera en tiempo de ejecución)
 data/ouroboros.db
+data/ouroboros.db-shm
+data/ouroboros.db-wal
 
 # Sistema
 .DS_Store
@@ -24,3 +26,9 @@ CLAUDE.md
 
 # Archivos generados
 data/ids_bitacora.log
+data/.reload_blacklist
+
+# Build artifacts
+*.egg-info/
+dist/
+build/

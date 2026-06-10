@@ -58,6 +58,8 @@ def init_db():
         """)
 
         # Tabla 4 — Conexiones a IPs peligrosas
+        # Los datos forenses (tipo_riesgo, score, etc.) viven en analisis_forense
+        # para evitar duplicar inteligencia cuando la misma IP dispara N alertas.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS alertas_blacklist (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,11 +67,6 @@ def init_db():
                 ip_origen    TEXT NOT NULL,
                 mac_origen   TEXT NOT NULL,
                 ip_peligrosa TEXT NOT NULL,
-                tipo_riesgo  TEXT,
-                score_abuso  INTEGER,
-                pais         TEXT,
-                isp          TEXT,
-                correo_abuso TEXT,
                 procesada    INTEGER DEFAULT 0
             )
         """)
@@ -82,6 +79,22 @@ def init_db():
                 url           TEXT NOT NULL UNIQUE,
                 activo        INTEGER DEFAULT 1,
                 ultimo_update TEXT
+            )
+        """)
+
+        # Tabla 6 — Análisis forense por IP (una fila por IP única)
+        # Desacoplado de alertas_blacklist para evitar duplicar inteligencia
+        # cuando la misma IP peligrosa dispara múltiples alertas.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS analisis_forense (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip            TEXT NOT NULL UNIQUE,
+                tipo_riesgo   TEXT,
+                score_abuso   INTEGER,
+                pais          TEXT,
+                isp           TEXT,
+                correo_abuso  TEXT,
+                ultimo_update TEXT NOT NULL
             )
         """)
 
@@ -218,19 +231,33 @@ def registrar_dns(ip_origen, dominio):
 
 # ── alertas_blacklist ────────────────────────────────────────────────────────
 
-def registrar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa,
-                                tipo_riesgo="", score_abuso=0,
-                                pais="", isp="", correo_abuso=""):
-    """Registra una conexión a una IP peligrosa con todos sus metadatos forenses."""
+def registrar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa):
+    """Registra una conexión a una IP peligrosa. El análisis forense
+    se persiste por separado en analisis_forense (una fila por IP única)."""
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO alertas_blacklist
-            (timestamp, ip_origen, mac_origen, ip_peligrosa,
-             tipo_riesgo, score_abuso, pais, isp, correo_abuso)
-            VALUES (?,?,?,?,?,?,?,?,?)
-        """, (datetime.now().isoformat(), ip_origen, mac_origen, ip_peligrosa,
-              tipo_riesgo, score_abuso, pais, isp, correo_abuso))
+            (timestamp, ip_origen, mac_origen, ip_peligrosa)
+            VALUES (?,?,?,?)
+        """, (datetime.now().isoformat(), ip_origen, mac_origen, ip_peligrosa))
         conn.commit()
+
+def registrar_analisis_forense(ip, tipo_riesgo, score_abuso, pais, isp, correo_abuso):
+    """
+    Persiste el análisis forense de una IP peligrosa.
+    Usa INSERT OR REPLACE — si la IP ya fue analizada, actualiza los datos
+    en lugar de duplicar la fila. Así 10 alertas de la misma IP producen
+    un solo registro de inteligencia siempre actualizado.
+    """
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO analisis_forense
+            (ip, tipo_riesgo, score_abuso, pais, isp, correo_abuso, ultimo_update)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (ip, tipo_riesgo, score_abuso, pais, isp, correo_abuso,
+              datetime.now().isoformat()))
+        conn.commit()
+
 
 def autorizar_por_ip(ip):
     """

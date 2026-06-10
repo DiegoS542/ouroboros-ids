@@ -1,69 +1,93 @@
+# Ouroboros IDS
+
+Sistema de detección de intrusos (IDS) para redes locales. Monitorea tráfico en tiempo real, detecta dispositivos no autorizados y conexiones a IPs peligrosas, y notifica al administrador por correo.
+
+---
+
 ## Instalación
 
-**1. Clonar el repositorio**
+### 1. Prerequisitos del sistema
 
 ```bash
-git clone https://github.com/tuusuario/ouroboros-ids.git
+# Arch Linux
+sudo pacman -S libpcap git python
+
+# Ubuntu / Debian
+sudo apt install libpcap-dev git python3 python3-venv
+
+# Fedora
+sudo dnf install libpcap-devel git python3
+```
+
+### 2. Clonar e instalar
+
+```bash
+git clone https://github.com/usuario/ouroboros-ids.git
 cd ouroboros-ids
-```
-
-**2. Crear el entorno virtual**
-
-```bash
 python -m venv venv
-
-# Linux / Mac
 source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-```
-
-**3. Instalar dependencias Python**
-
-```bash
-pip install -r requirements.txt
-```
-
-**4. Configurar credenciales**
-
-```bash
+pip install -e .
 cp .env.example .env
-nano .env  # Llenar con las credenciales reales
+# Editar .env con las credenciales reales
 ```
 
-Variables necesarias en `.env`:## Instalación
+### 3. Registrar el comando `ouroboros` en el sistema
 
-**1. Clonar el repositorio**
+Permite ejecutar `ouroboros` desde cualquier directorio sin activar el venv manualmente:
 
 ```bash
-git clone https://github.com/tuusuario/ouroboros-ids.git
-cd ouroboros-ids
+sudo ln -sf "$(pwd)/venv/bin/ouroboros" /usr/local/bin/ouroboros
 ```
 
-**2. Crear el entorno virtual**
+Solo se ejecuta una vez por instalación.
+
+---
+
+## Uso
+
+### Arrancar el IDS
 
 ```bash
-python -m venv venv
-
-# Linux / Mac
-source venv/bin/activate
-
-# Windows (solo para servicios — el sniffer no corre en Windows)
-venv\Scripts\activate
+sudo ouroboros                        # interfaz detectada automáticamente
+sudo ouroboros --interface eth0       # especificar interfaz manualmente
 ```
 
-**3. Instalar dependencias Python**
+Al primer arranque se genera una contraseña aleatoria para el dashboard. Cámbiala antes de usar el sistema.
+
+### Dashboard web
+
+Disponible en `http://localhost:5000` mientras el IDS esté corriendo.
+
+---
+
+## CLI de administración
+
+### Consulta — no requiere sudo
 
 ```bash
-pip install -r requirements.txt
+ouroboros status                      # resumen general del sistema
+ouroboros devices list                # dispositivos detectados en la red
+ouroboros blacklist list              # IPs en la lista negra local
+ouroboros feeds list                  # feeds de IPs peligrosas registrados
+ouroboros dns <ip>                    # últimas consultas DNS de una IP
+ouroboros help                        # referencia de todos los comandos
 ```
 
-**4. Configurar credenciales**
+### Administración — requiere sudo
 
 ```bash
-cp .env.example .env
-nano .env  # Llenar con las credenciales reales
-```
+# Dispositivos
+sudo ouroboros devices authorize <mac>
+sudo ouroboros devices block <mac>
+sudo ouroboros devices clear
 
-Variables necesarias en `.env`:
+# Lista negra local
+sudo ouroboros blacklist add <ip>
+sudo ouroboros blacklist remove <ip>
+
+# Feeds
+sudo ouroboros feeds add <nombre> <url>
+sudo ouroboros feeds enable <id>
+sudo ouroboros feeds disable <id>
+sudo ouroboros feeds remove <id>
+```

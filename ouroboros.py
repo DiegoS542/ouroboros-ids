@@ -7,21 +7,29 @@ Arranca el sistema completo:
     1. Valida que todas las variables de entorno estén configuradas
     2. Detecta la interfaz de red disponible
     3. Inicializa el sniffer
-    4. Arranca dos hilos en paralelo:
+    4. Arranca tres hilos en paralelo:
          Hilo 1 — sniffer (captura paquetes)
          Hilo 2 — worker (monitorea SQLite y manda correos)
+         Hilo 3 — dashboard (Flask en http://0.0.0.0:5000)
 
 Uso:
     sudo venv/bin/python ouroboros.py
-    sudo venv/bin/python ouroboros.py --interfaz eth0
+    sudo venv/bin/python ouroboros.py --interface eth0
 """
 
 import argparse
+import os
+import sys
 import threading
 import netifaces
 from config.settings import validate
 from core.sniffer import OuroborosSniffer
 from services.worker import iniciar_worker
+from dashboard.dashboard import app as dashboard_app, init_usuarios
+
+# Subcomandos que pertenecen al CLI de administración.
+# Cualquier otro argumento (--interface, nada) arranca el IDS.
+_CLI_COMMANDS = {"status", "devices", "blacklist", "feeds", "dns", "help"}
 
 
 def detectar_interfaz():
@@ -48,6 +56,19 @@ def detectar_interfaz():
 
 
 def main():
+    # ── Dispatch al CLI de administración ────────────────────────────────────
+    # Los subcomandos del CLI no requieren sudo — el chequeo va después.
+    if len(sys.argv) > 1 and sys.argv[1] in _CLI_COMMANDS:
+        from cli import despachar
+        despachar()
+        return
+
+    # ── Validar privilegios ──────────────────────────────────────────────────
+    if os.geteuid() != 0:
+        print("Error: Ouroboros requiere privilegios de administrador.")
+        print("Ejecuta: sudo ouroboros")
+        sys.exit(1)
+
     # ── Banner ───────────────────────────────────────────────────────────────
     print("""
     ╔═══════════════════════════════════════════╗
@@ -61,13 +82,13 @@ def main():
 
     # ── Parser de argumentos ─────────────────────────────────────────────────
     # Permite especificar la interfaz manualmente si se desea
-    # Ejemplo: sudo python ouroboros.py --interfaz eth0
+    # Ejemplo: sudo python ouroboros.py --interface eth0
     parser = argparse.ArgumentParser(description="Ouroboros IDS — Sistema de Detección de Intrusos")
     parser.add_argument(
-        "--interfaz",
+        "--interface",
         type=str,
         default=None,
-        help="Interfaz de red a monitorear (ej: wlan0, eth0). Si no se especifica, se detecta automáticamente."
+        help="Network interface to monitor (e.g. wlan0, eth0). Auto-detected if not specified."
     )
     args = parser.parse_args()
 
@@ -82,8 +103,8 @@ def main():
         return
 
     # ── Detectar interfaz ────────────────────────────────────────────────────
-    if args.interfaz:
-        interfaz = args.interfaz
+    if args.interface:
+        interfaz = args.interface
         print(f"[Ouroboros] Interfaz especificada manualmente: {interfaz}")
     else:
         interfaz = detectar_interfaz()
@@ -97,11 +118,32 @@ def main():
     sniffer.arp_scan()
 
     # ── Arrancar worker en hilo separado ─────────────────────────────────────
-    # daemon=True garantiza que el hilo muere solo cuando el proceso principal
-    # termina (Ctrl+C) — no hay que matarlo manualmente
     hilo_worker = threading.Thread(target=iniciar_worker, daemon=True, name="worker")
     hilo_worker.start()
     print("[Ouroboros] Worker de alertas iniciado en segundo plano.")
+
+    # ── Arrancar dashboard en hilo separado ──────────────────────────────────
+    import logging
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+    pwd_inicial = init_usuarios()
+    hilo_dashboard = threading.Thread(
+        target=lambda: dashboard_app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False),
+        daemon=True, name="dashboard"
+    )
+    hilo_dashboard.start()
+    ip_red = netifaces.ifaddresses(interfaz)[netifaces.AF_INET][0]['addr']
+    sep = "─" * 48
+    print(f"\n  {sep}")
+    print(f"  [Dashboard] Local:     http://127.0.0.1:5000")
+    print(f"  [Dashboard] Red local: http://{ip_red}:5000")
+    if pwd_inicial:
+        print(f"  [Dashboard] Usuario:    admin")
+        print(f"  [Dashboard] Contraseña: {pwd_inicial}")
+    print(f"  {sep}")
+    if pwd_inicial:
+        print(f"\n  ⚠ Primer arranque — cambia la contraseña desde el dashboard antes de usar el sistema.")
+    print()
 
     # ── Monitoreo pasivo — bloquea hasta Ctrl+C ───────────────────────────────
     sniffer.iniciar()

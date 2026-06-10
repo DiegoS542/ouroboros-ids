@@ -34,6 +34,7 @@ Funciona aunque el sniffer NO esté corriendo: solo lee la base SQLite.
 Para probar con datos falsos:  python seed_demo.py
 """
 
+import html
 import re
 import secrets
 import sqlite3
@@ -200,10 +201,11 @@ def scalar(sql, params=()):
 
 def init_usuarios():
     """
-    Crea la tabla de usuarios si no existe. Si está vacía, siembra la
-    cuenta admin con las credenciales del .env — marcada para cambiar
-    la contraseña en el primer login. Las contraseñas se guardan
-    hasheadas (PBKDF2 vía werkzeug), nunca en texto plano.
+    Crea la tabla de usuarios si no existe. Si está vacía, genera una
+    contraseña aleatoria para el admin, la hashea y la persiste.
+    Retorna la contraseña en texto plano solo en ese primer arranque,
+    None si el admin ya existía. El usuario está marcado para cambiar
+    la contraseña en el primer login.
     """
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -219,17 +221,17 @@ def init_usuarios():
         conn.commit()
 
         if conn.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0] == 0:
-            usuario = leer_env_var("DASHBOARD_USER") or "admin"
-            clave   = leer_env_var("DASHBOARD_PASSWORD") or "ouroboros"
+            clave = secrets.token_urlsafe(10)
             conn.execute(
                 """INSERT INTO usuarios (usuario, password_hash, rol, cambiar_pwd, creado)
                    VALUES (?, ?, 'admin', 1, ?)""",
-                (usuario, generate_password_hash(clave),
+                ("admin", generate_password_hash(clave),
                  datetime.now(timezone.utc).isoformat())
             )
             conn.commit()
-            print(f"[Ouroboros] Usuario admin inicial: '{usuario}' — "
-                  "deberá cambiar la contraseña en su primer login.")
+            return clave  # solo existe en texto plano este instante
+
+    return None
 
 
 def buscar_usuario(usuario):
@@ -242,14 +244,12 @@ def buscar_usuario(usuario):
 # Los feeds remotos los descarga core/feed_updater al arrancar el sniffer;
 # aquí solo se administra la lista local y las fuentes de feeds (tabla).
 
-def agregar_ip_local(ip, comentario=""):
+def agregar_ip_local(ip):
     """Agrega una IP a blacklist.txt. Retorna False si ya estaba."""
     ip = ip.strip()
     if ip in _cargar_blacklist_local():
         return False
     with open(BLACKLIST_PATH, "a") as f:
-        if comentario:
-            f.write(f"\n# {comentario}\n")
         f.write(f"{ip}\n")
     return True
 
@@ -372,7 +372,7 @@ BASE = """
   {% endwith %}
   {{ contenido|safe }}
 </main>
-<footer>Ouroboros IDS — Dashboard de administración · sesión JWT ({{ TOKEN_MIN }} min) · auto-refresh inteligente (se pausa mientras escribes)</footer>
+<footer></footer>
 <script>
   // Auto-refresh inteligente: recarga cada 15 s SOLO si el usuario no está
   // escribiendo y ningún campo tiene contenido — así los formularios
@@ -574,7 +574,7 @@ def resumen():
 
     top = query("""SELECT dominio, COUNT(*) c FROM bitacora_dns
                    GROUP BY dominio ORDER BY c DESC LIMIT 5""")
-    ultimas = query("""SELECT timestamp, ip_peligrosa, tipo_riesgo, score_abuso
+    ultimas = query("""SELECT timestamp, ip_origen, ip_peligrosa
                        FROM alertas_blacklist ORDER BY timestamp DESC LIMIT 5""")
 
     # Tarjetas-atajo: cada una lleva a su vista al hacer clic.
@@ -597,10 +597,9 @@ def resumen():
 
     t1 = tabla(top, [("dominio", "Dominio"), ("c", "Visitas")])
     t2 = tabla(ultimas,
-               [("timestamp", "Fecha"), ("ip_peligrosa", "IP peligrosa"),
-                ("tipo_riesgo", "Riesgo"), ("score_abuso", "Score")],
-               {"timestamp": lambda f: fecha(f["timestamp"]),
-                "tipo_riesgo": lambda f: f'<span class="badge rojo">{f["tipo_riesgo"]}</span>'})
+               [("timestamp", "Fecha"), ("ip_origen", "IP origen"),
+                ("ip_peligrosa", "IP peligrosa")],
+               {"timestamp": lambda f: fecha(f["timestamp"])})
 
     panel_emergencias = f"""
     <div class="panel-peligro">
@@ -623,7 +622,10 @@ def dispositivos():
 
     def estado(f):
         if f["autorizado"]:
-            return '<span class="badge verde">Autorizado</span>'
+            boton = f"""<form class="inline" method="post"
+                         action="{url_for('desautorizar', mac=f['mac'])}">
+                         <button type="submit" style="background:var(--red)">Revocar</button></form>"""
+            return f'<span class="badge verde">Autorizado</span> {boton}'
         boton = f"""<form class="inline" method="post"
                      action="{url_for('autorizar', mac=f['mac'])}">
                      <button type="submit">Autorizar</button></form>"""
@@ -636,11 +638,6 @@ def dispositivos():
         <input type="text" name="mac" placeholder="MAC (AA:BB:CC:DD:EE:FF)" required>
         <input type="submit" value="Autorizar MAC">
       </form>
-      <p style="color:var(--dim); font-size:12px; margin-top:10px">
-        La MAC es el identificador real del dispositivo (Capa 2) — la IP puede
-        cambiar por DHCP, así que el sniffer la detecta y actualiza solo.
-        La whitelist vive en la tabla <code>dispositivos_conocidos</code> de la BD,
-        la misma que consulta el sniffer con <code>es_autorizado()</code>.</p>
     </div>"""
 
     t = tabla(filas,
@@ -659,6 +656,18 @@ def dispositivos():
 def autorizar(mac):
     db_writer.autorizar_dispositivo(mac)
     flash(f"Dispositivo {mac} autorizado.")
+    return redirect(url_for("dispositivos"))
+
+
+@app.route("/desautorizar/<mac>", methods=["POST"])
+@requiere_token
+def desautorizar(mac):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE dispositivos_conocidos SET autorizado = 0 WHERE mac = ?", (mac,)
+        )
+        conn.commit()
+    flash(f"Autorización de {mac} revocada.")
     return redirect(url_for("dispositivos"))
 
 
@@ -697,15 +706,20 @@ def alertas():
 def dns():
     filtro = request.args.get("ip", "").strip()
     if filtro:
-        filas = query("""SELECT * FROM bitacora_dns WHERE ip_origen = ?
+        filas = query("""SELECT ip_origen, dominio, MAX(timestamp) AS timestamp
+                         FROM bitacora_dns WHERE ip_origen = ?
+                         GROUP BY ip_origen, dominio
                          ORDER BY timestamp DESC LIMIT 300""", (filtro,))
     else:
-        filas = query("SELECT * FROM bitacora_dns ORDER BY timestamp DESC LIMIT 300")
+        filas = query("""SELECT ip_origen, dominio, MAX(timestamp) AS timestamp
+                         FROM bitacora_dns
+                         GROUP BY ip_origen, dominio
+                         ORDER BY timestamp DESC LIMIT 300""")
 
     buscador = f"""
     <div class="alta">
       <form method="get">
-        <input type="text" name="ip" value="{filtro}" placeholder="Filtrar por IP origen">
+        <input type="text" name="ip" value="{html.escape(filtro)}" placeholder="Filtrar por IP origen">
         <input type="submit" value="Filtrar">
       </form>
     </div>"""
@@ -735,7 +749,6 @@ def blacklist():
       <h2>Agregar IP a la lista negra local</h2>
       <form method="post" action="{url_for('blacklist_agregar')}">
         <input type="text" name="ip" placeholder="IP (ej. 91.92.109.196)" required>
-        <input type="text" name="comentario" placeholder="Motivo (ej. C2 Server)">
         <input type="submit" value="Agregar">
       </form>
       <p style="color:var(--dim); font-size:12px; margin-top:10px">
@@ -777,16 +790,28 @@ def blacklist():
         (líneas con # se ignoran). Se descarga en caliente en ~5 s.</p>
     </div>"""
 
-    # ── Detecciones registradas ──
-    filas = query("SELECT * FROM alertas_blacklist ORDER BY timestamp DESC LIMIT 200")
+    # ── Detecciones registradas con análisis forense ──
+    filas = query("""
+        SELECT a.timestamp, a.ip_origen, a.ip_peligrosa,
+               COALESCE(f.tipo_riesgo,  '—') AS tipo_riesgo,
+               COALESCE(f.score_abuso,  '—') AS score_abuso,
+               COALESCE(f.pais,         '—') AS pais,
+               COALESCE(f.isp,          '—') AS isp,
+               COALESCE(f.correo_abuso, '—') AS correo_abuso
+        FROM alertas_blacklist a
+        LEFT JOIN analisis_forense f ON a.ip_peligrosa = f.ip
+        ORDER BY a.timestamp DESC LIMIT 200
+    """)
     t = tabla(filas,
               [("timestamp", "Fecha"), ("ip_origen", "IP origen"),
                ("ip_peligrosa", "IP peligrosa"), ("tipo_riesgo", "Riesgo"),
                ("score_abuso", "Score"), ("pais", "País"),
                ("isp", "ISP"), ("correo_abuso", "Contacto abuso")],
               {"timestamp": lambda f: fecha(f["timestamp"]),
-               "tipo_riesgo": lambda f: f'<span class="badge rojo">{f["tipo_riesgo"]}</span>',
-               "score_abuso": lambda f: f'<span class="mal">{f["score_abuso"]}</span>'})
+               "tipo_riesgo": lambda f: (f'<span class="badge rojo">{f["tipo_riesgo"]}</span>'
+                                         if f["tipo_riesgo"] != "—" else "—"),
+               "score_abuso": lambda f: (f'<span class="mal">{f["score_abuso"]}</span>'
+                                         if f["score_abuso"] != "—" else "—")})
 
     # ── Pestañas: Lista local | Feeds remotos ──
     recarga_pendiente = RELOAD_FLAG.exists()
@@ -845,14 +870,13 @@ def blacklist():
 def blacklist_agregar():
     import ipaddress
     ip = request.form["ip"].strip()
-    comentario = request.form.get("comentario", "").strip()
     try:
         ipaddress.ip_address(ip)
     except ValueError:
         flash(f"'{ip}' no es una IP válida.")
         return redirect(url_for("blacklist"))
 
-    if agregar_ip_local(ip, comentario):
+    if agregar_ip_local(ip):
         señalar_recarga()
         flash(f"IP {ip} agregada a la lista negra local — el sniffer la aplicará en ~5 s.")
     else:
@@ -1043,9 +1067,7 @@ def config():
         <input type="submit" value="Cambiar correo">
       </form>
       <p style="color:var(--dim); font-size:12px; margin-top:10px">
-        Identificación: usuario del login · Autenticación: JWT firmado (HS256) ·
-        Autorización: claim rol=admin del token.
-        El cambio aplica de inmediato — el mailer recarga el .env en cada envío.</p>
+        El cambio aplica de inmediato.</p>
     </div>"""
     return render("config", "Configuración", contenido)
 
