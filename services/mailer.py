@@ -81,7 +81,7 @@ def enviar_alerta_whitelist(ip, mac, detalle=""):
     </div>
     """
 
-    html_content = _generar_html_base("⚠️ DISPOSITIVO NO REGISTRADO", color_advertencia, tabla, nota)
+    html_content = _generar_html_base("DISPOSITIVO NO REGISTRADO", color_advertencia, tabla, nota)
 
     resultado = _conectar_smtp()
     if not resultado:
@@ -103,10 +103,13 @@ def enviar_alerta_whitelist(ip, mac, detalle=""):
         return False
 
 
-def enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa):
+def enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa,
+                            puerto_destino=None, protocolo=None):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    asunto = "[Ouroboros] 🚨 EMERGENCIA — Conexión a IP peligrosa"
+    asunto = "[Ouroboros] EMERGENCIA — Conexión a IP peligrosa"
     color_peligro = "#e74c3c"
+    destino_str = (f"{ip_peligrosa}:{puerto_destino} ({protocolo})"
+                   if puerto_destino else ip_peligrosa)
 
     tabla = f"""
         <tr style="background-color: #f8f9fa;">
@@ -123,7 +126,7 @@ def enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa):
         </tr>
         <tr>
             <td style="padding: 10px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">IP Externa (Peligrosa):</td>
-            <td style="padding: 10px; border-bottom: 1px solid #e1e8ed; font-family: monospace; color: {color_peligro}; font-weight: bold;">{ip_peligrosa}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #e1e8ed; font-family: monospace; color: {color_peligro}; font-weight: bold;">{destino_str}</td>
         </tr>
         <tr style="background-color: #f8f9fa;">
             <td style="padding: 10px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">Fecha / Hora:</td>
@@ -137,7 +140,7 @@ def enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa):
     </div>
     """
 
-    html_content = _generar_html_base("🚨 ALERTA DE EMERGENCIA", color_peligro, tabla, nota)
+    html_content = _generar_html_base("ALERTA DE EMERGENCIA", color_peligro, tabla, nota)
 
     resultado = _conectar_smtp()
     if not resultado:
@@ -160,17 +163,43 @@ def enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa):
 
 
 def enviar_reporte_forense(ip_origen, mac_origen, ip_peligrosa,
-                           tipo_riesgo, score_abuso, pais,
-                           isp, correo_abuso):
+                           tipo_riesgo, score_abuso, pais, isp, correo_abuso,
+                           total_reportes=None, ultimo_reporte=None,
+                           hostname=None, categorias=None, asn=None):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     asunto = f"[Ouroboros] Reporte Forense — {ip_peligrosa}"
     color_forense = "#2c3e50"
+
+    fila_hostname = f"""
+        <tr style="background-color: #f8f9fa;">
+            <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold; width: 40%;">Hostname (rDNS):</td>
+            <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-family: monospace;">{hostname}</td>
+        </tr>""" if hostname else ""
+
+    fila_categorias = f"""
+        <tr>
+            <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">Categorías de Ataque:</td>
+            <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; color: #e74c3c;">{categorias}</td>
+        </tr>""" if categorias else ""
+
+    fila_reportes = f"""
+        <tr style="background-color: #f8f9fa;">
+            <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">Reportes en AbuseIPDB:</td>
+            <td style="padding: 8px; border-bottom: 1px solid #e1e8ed;">{total_reportes} (último: {(ultimo_reporte or '—')[:10]})</td>
+        </tr>""" if total_reportes is not None else ""
+
+    fila_asn = f"""
+        <tr>
+            <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">ASN:</td>
+            <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-family: monospace;">{asn}</td>
+        </tr>""" if asn else ""
 
     tabla = f"""
         <tr style="background-color: #f8f9fa;">
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold; width: 40%;">IP Externa Analizada:</td>
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-family: monospace; font-weight: bold;">{ip_peligrosa}</td>
         </tr>
+        {fila_hostname}
         <tr>
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">Tipo de Amenaza:</td>
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; color: #e74c3c; font-weight: bold;">{tipo_riesgo}</td>
@@ -179,6 +208,8 @@ def enviar_reporte_forense(ip_origen, mac_origen, ip_peligrosa,
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">Abuse Score (0-100):</td>
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">{score_abuso}%</td>
         </tr>
+        {fila_reportes}
+        {fila_categorias}
         <tr>
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">País de Origen:</td>
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed;">{pais}</td>
@@ -187,6 +218,7 @@ def enviar_reporte_forense(ip_origen, mac_origen, ip_peligrosa,
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">Proveedor (ISP):</td>
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-size: 14px;">{isp}</td>
         </tr>
+        {fila_asn}
         <tr>
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-weight: bold;">Contacto de Abuso:</td>
             <td style="padding: 8px; border-bottom: 1px solid #e1e8ed; font-family: monospace; color: #2980b9;">{correo_abuso if correo_abuso else 'No disponible'}</td>
@@ -203,7 +235,7 @@ def enviar_reporte_forense(ip_origen, mac_origen, ip_peligrosa,
     </div>
     """
 
-    html_content = _generar_html_base("📊 REPORTE DE INTELIGENCIA FORENSE", color_forense, tabla, nota)
+    html_content = _generar_html_base("REPORTE DE INTELIGENCIA FORENSE", color_forense, tabla, nota)
 
     resultado = _conectar_smtp()
     if not resultado:

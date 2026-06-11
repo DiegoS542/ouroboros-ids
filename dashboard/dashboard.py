@@ -214,7 +214,7 @@ BASE = """
   nav a:hover { color:var(--txt); background:var(--border); }
   nav a.activa { color:var(--txt); background:var(--accent); }
   nav a.salir { color:var(--red); }
-  main { max-width:1100px; margin:24px auto; padding:0 24px; }
+  main { max-width:1400px; margin:24px auto; padding:0 24px; }
   h2 { font-size:16px; margin-bottom:14px; color:var(--blue); }
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
            gap:14px; margin-bottom:26px; }
@@ -247,7 +247,8 @@ BASE = """
   .ok    { color:var(--green); font-weight:600; }
   .mal   { color:var(--red);   font-weight:600; }
   .warn  { color:var(--yellow); }
-  .badge { padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600;
+           white-space:nowrap; display:inline-block; }
   .badge.rojo  { background:rgba(248,81,73,.15);  color:var(--red); }
   .badge.verde { background:rgba(63,185,80,.15);  color:var(--green); }
   form.inline { display:inline; }
@@ -700,25 +701,53 @@ def blacklist():
 
     filas = query("""
         SELECT a.timestamp, a.ip_origen, a.ip_peligrosa,
-               COALESCE(f.tipo_riesgo,  '—') AS tipo_riesgo,
-               COALESCE(f.score_abuso,  '—') AS score_abuso,
-               COALESCE(f.pais,         '—') AS pais,
-               COALESCE(f.isp,          '—') AS isp,
-               COALESCE(f.correo_abuso, '—') AS correo_abuso
+               a.puerto_destino, a.protocolo,
+               COALESCE(f.hostname,       '—') AS hostname,
+               COALESCE(f.tipo_riesgo,    '—') AS tipo_riesgo,
+               COALESCE(f.score_abuso,    '—') AS score_abuso,
+               COALESCE(f.total_reportes, '—') AS total_reportes,
+               COALESCE(f.categorias,     '—') AS categorias,
+               COALESCE(f.pais,           '—') AS pais,
+               COALESCE(f.isp,            '—') AS isp,
+               COALESCE(f.correo_abuso,   '—') AS correo_abuso
         FROM alertas_blacklist a
         LEFT JOIN analisis_forense f ON a.ip_peligrosa = f.ip
         ORDER BY a.timestamp DESC LIMIT 200
     """)
     t = tabla(filas,
-              [("timestamp", "Fecha"), ("ip_origen", "IP origen"),
-               ("ip_peligrosa", "IP peligrosa"), ("tipo_riesgo", "Riesgo"),
-               ("score_abuso", "Score"), ("pais", "País"),
-               ("isp", "ISP"), ("correo_abuso", "Contacto abuso")],
+              [("timestamp",      "Fecha"),
+               ("ip_origen",      "IP origen"),
+               ("ip_peligrosa",   "Destino"),
+               ("hostname",       "Hostname"),
+               ("tipo_riesgo",    "Riesgo"),
+               ("score_abuso",    "Score"),
+               ("total_reportes", "Reportes"),
+               ("categorias",     "Categorías"),
+               ("pais",           "País"),
+               ("isp",            "ISP"),
+               ("correo_abuso",   "Contacto abuso")],
               {"timestamp": lambda f: fecha(f["timestamp"]),
-               "tipo_riesgo": lambda f: (f'<span class="badge rojo">{f["tipo_riesgo"]}</span>'
-                                         if f["tipo_riesgo"] != "—" else "—"),
-               "score_abuso": lambda f: (f'<span class="mal">{f["score_abuso"]}</span>'
-                                         if f["score_abuso"] != "—" else "—")})
+               "ip_peligrosa": lambda f: (
+                   f'{f["ip_peligrosa"]}:{f["puerto_destino"]}'
+                   f' <span style="color:var(--dim);font-size:11px">({f["protocolo"]})</span>'
+                   if f["puerto_destino"] else f["ip_peligrosa"]
+               ),
+               "tipo_riesgo": lambda f: (
+                   f'<span class="badge rojo">{f["tipo_riesgo"]}</span>'
+                   if f["tipo_riesgo"] != "—" else "—"
+               ),
+               "score_abuso": lambda f: (
+                   f'<span class="mal">{f["score_abuso"]}</span>'
+                   if f["score_abuso"] != "—" else "—"
+               ),
+               "total_reportes": lambda f: (
+                   f'<span class="mal">{f["total_reportes"]}</span>'
+                   if f["total_reportes"] not in ("—", 0, "0") else f["total_reportes"]
+               ),
+               "categorias": lambda f: (
+                   f'<span style="font-size:12px;color:var(--yellow)">{f["categorias"]}</span>'
+                   if f["categorias"] != "—" else "—"
+               )})
 
     recarga_pendiente = RELOAD_FLAG.exists()
     aviso_recarga = ("""<div class="flash" style="border-color:var(--yellow);
@@ -768,7 +797,12 @@ def blacklist():
 
     return render("blacklist", "IPs Peligrosas",
                   tabs +
-                  "<h2 style='margin-top:24px'>Conexiones a IPs peligrosas — datos forenses (Whois/AbuseIPDB)</h2>" + t)
+                  "<h2 style='margin-top:24px'>Conexiones a IPs peligrosas — datos forenses (Whois/AbuseIPDB)</h2>"
+                  f'<div style="overflow-x:auto">'
+                  f'<style>.tbl-forense th,.tbl-forense td{{white-space:nowrap}}'
+                  f'.tbl-forense td:last-child{{white-space:normal;min-width:160px}}</style>'
+                  + t.replace("<table>", '<table class="tbl-forense">', 1)
+                  + "</div>")
 
 
 @app.route("/blacklist/agregar", methods=["POST"])

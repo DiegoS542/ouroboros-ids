@@ -4,7 +4,7 @@ from pathlib import Path
 
 import netifaces
 from scapy.all import sniff, ARP, Ether, srp
-from scapy.layers.inet import IP
+from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.dns import DNS, DNSQR
 
 from core.blacklist import cargar_blacklist, es_peligrosa
@@ -186,21 +186,35 @@ class OuroborosSniffer:
 
             if es_peligrosa(ip_destino, self.ips_peligrosas):
                 if not self._en_cooldown_bl(mac_origen, ip_destino):
+                    if paquete.haslayer(TCP):
+                        protocolo      = "TCP"
+                        puerto_destino = paquete[TCP].dport
+                    elif paquete.haslayer(UDP):
+                        protocolo      = "UDP"
+                        puerto_destino = paquete[UDP].dport
+                    else:
+                        protocolo      = str(paquete[IP].proto)
+                        puerto_destino = None
+
                     registrar_alerta_blacklist(
-                        ip_origen    = ip_origen,
-                        mac_origen   = mac_origen,
-                        ip_peligrosa = ip_destino
+                        ip_origen      = ip_origen,
+                        mac_origen     = mac_origen,
+                        ip_peligrosa   = ip_destino,
+                        puerto_destino = puerto_destino,
+                        protocolo      = protocolo,
                     )
 
                     with self._lock:
                         self.alertas_pendientes.append({
-                            "tipo":         "BLACKLIST",
-                            "ip_origen":    ip_origen,
-                            "mac_origen":   mac_origen,
-                            "ip_peligrosa": ip_destino
+                            "tipo":           "BLACKLIST",
+                            "ip_origen":      ip_origen,
+                            "mac_origen":     mac_origen,
+                            "ip_peligrosa":   ip_destino,
+                            "puerto_destino": puerto_destino,
+                            "protocolo":      protocolo,
                         })
 
-                    print(f"[EMERGENCIA] Conexión a IP peligrosa: {ip_destino} desde {ip_origen}")
+                    print(f"[EMERGENCIA] Conexión a IP peligrosa: {ip_destino}:{puerto_destino} ({protocolo}) desde {ip_origen}")
 
     def _vigilar_recarga(self):
         while True:

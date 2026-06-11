@@ -32,12 +32,13 @@ def _procesar_whitelist(conn):
 
 def _procesar_blacklist(conn):
     cursor = conn.execute(
-        "SELECT id, ip_origen, mac_origen, ip_peligrosa FROM alertas_blacklist WHERE procesada = 0"
+        "SELECT id, ip_origen, mac_origen, ip_peligrosa, puerto_destino, protocolo "
+        "FROM alertas_blacklist WHERE procesada = 0"
     )
     alertas = cursor.fetchall()
 
-    for id_alerta, ip_origen, mac_origen, ip_peligrosa in alertas:
-        enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa)
+    for id_alerta, ip_origen, mac_origen, ip_peligrosa, puerto_destino, protocolo in alertas:
+        enviar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa, puerto_destino, protocolo)
         registrar_evento("BLACKLIST", ip_origen, ip_peligrosa)
 
         reporte = analizar_ip(ip_peligrosa)
@@ -45,14 +46,25 @@ def _procesar_blacklist(conn):
         if reporte:
             registrar_analisis_forense(
                 ip_peligrosa,
-                reporte["tipo_riesgo"], reporte["score_abuso"],
-                reporte["pais"], reporte["isp"], reporte["correo_abuso"]
+                reporte["tipo_riesgo"],    reporte["score_abuso"],
+                reporte["pais"],           reporte["isp"],
+                reporte["correo_abuso"],
+                total_reportes = reporte.get("total_reportes"),
+                ultimo_reporte = reporte.get("ultimo_reporte"),
+                hostname       = reporte.get("hostname"),
+                categorias     = reporte.get("categorias"),
             )
 
             enviar_reporte_forense(
                 ip_origen, mac_origen, ip_peligrosa,
-                reporte["tipo_riesgo"], reporte["score_abuso"],
-                reporte["pais"], reporte["isp"], reporte["correo_abuso"]
+                reporte["tipo_riesgo"],    reporte["score_abuso"],
+                reporte["pais"],           reporte["isp"],
+                reporte["correo_abuso"],
+                total_reportes = reporte.get("total_reportes"),
+                ultimo_reporte = reporte.get("ultimo_reporte"),
+                hostname       = reporte.get("hostname"),
+                categorias     = reporte.get("categorias"),
+                asn            = reporte.get("asn"),
             )
 
         conn.execute(

@@ -45,12 +45,14 @@ def init_db():
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS alertas_blacklist (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp    TEXT NOT NULL,
-                ip_origen    TEXT NOT NULL,
-                mac_origen   TEXT NOT NULL,
-                ip_peligrosa TEXT NOT NULL,
-                procesada    INTEGER DEFAULT 0
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp      TEXT NOT NULL,
+                ip_origen      TEXT NOT NULL,
+                mac_origen     TEXT NOT NULL,
+                ip_peligrosa   TEXT NOT NULL,
+                puerto_destino INTEGER,
+                protocolo      TEXT,
+                procesada      INTEGER DEFAULT 0
             )
         """)
 
@@ -66,20 +68,41 @@ def init_db():
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS analisis_forense (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                ip            TEXT NOT NULL UNIQUE,
-                tipo_riesgo   TEXT,
-                score_abuso   INTEGER,
-                pais          TEXT,
-                isp           TEXT,
-                correo_abuso  TEXT,
-                ultimo_update TEXT NOT NULL
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip             TEXT NOT NULL UNIQUE,
+                hostname       TEXT,
+                tipo_riesgo    TEXT,
+                score_abuso    INTEGER,
+                total_reportes INTEGER,
+                ultimo_reporte TEXT,
+                categorias     TEXT,
+                pais           TEXT,
+                isp            TEXT,
+                correo_abuso   TEXT,
+                ultimo_update  TEXT NOT NULL
             )
         """)
 
+        _migrar_db(cursor)
         conn.commit()
     print("[Ouroboros] Base de datos inicializada correctamente.")
     inicializar_feeds_default()
+
+
+def _migrar_db(cursor):
+    migraciones = [
+        "ALTER TABLE alertas_blacklist ADD COLUMN puerto_destino INTEGER",
+        "ALTER TABLE alertas_blacklist ADD COLUMN protocolo TEXT",
+        "ALTER TABLE analisis_forense ADD COLUMN hostname TEXT",
+        "ALTER TABLE analisis_forense ADD COLUMN total_reportes INTEGER",
+        "ALTER TABLE analisis_forense ADD COLUMN ultimo_reporte TEXT",
+        "ALTER TABLE analisis_forense ADD COLUMN categorias TEXT",
+    ]
+    for sql in migraciones:
+        try:
+            cursor.execute(sql)
+        except Exception:
+            pass
 
 
 FEEDS_DEFAULT = [
@@ -178,23 +201,28 @@ def registrar_dns(ip_origen, dominio):
         conn.commit()
 
 
-def registrar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa):
+def registrar_alerta_blacklist(ip_origen, mac_origen, ip_peligrosa,
+                               puerto_destino=None, protocolo=None):
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO alertas_blacklist
-            (timestamp, ip_origen, mac_origen, ip_peligrosa)
-            VALUES (?,?,?,?)
-        """, (datetime.now().isoformat(), ip_origen, mac_origen, ip_peligrosa))
+            (timestamp, ip_origen, mac_origen, ip_peligrosa, puerto_destino, protocolo)
+            VALUES (?,?,?,?,?,?)
+        """, (datetime.now().isoformat(), ip_origen, mac_origen, ip_peligrosa,
+              puerto_destino, protocolo))
         conn.commit()
 
-def registrar_analisis_forense(ip, tipo_riesgo, score_abuso, pais, isp, correo_abuso):
+def registrar_analisis_forense(ip, tipo_riesgo, score_abuso, pais, isp, correo_abuso,
+                                total_reportes=None, ultimo_reporte=None,
+                                hostname=None, categorias=None):
     with get_connection() as conn:
         conn.execute("""
             INSERT OR REPLACE INTO analisis_forense
-            (ip, tipo_riesgo, score_abuso, pais, isp, correo_abuso, ultimo_update)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (ip, tipo_riesgo, score_abuso, pais, isp, correo_abuso,
-              datetime.now().isoformat()))
+            (ip, hostname, tipo_riesgo, score_abuso, total_reportes, ultimo_reporte,
+             categorias, pais, isp, correo_abuso, ultimo_update)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ip, hostname, tipo_riesgo, score_abuso, total_reportes, ultimo_reporte,
+              categorias, pais, isp, correo_abuso, datetime.now().isoformat()))
         conn.commit()
 
 
