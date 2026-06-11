@@ -24,6 +24,10 @@ data/ouroboros.db-wal
 CLAUDE.md
 
 
+# Documentación local
+CONTEXT.md
+docs/
+
 # Archivos generados
 data/ids_bitacora.log
 data/.reload_blacklist

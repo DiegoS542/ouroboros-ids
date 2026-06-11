@@ -296,9 +296,6 @@ BASE = """
 </main>
 <footer></footer>
 <script>
-  // Auto-refresh inteligente: recarga cada 15 s SOLO si el usuario no está
-  // escribiendo y ningún campo tiene contenido — así los formularios
-  // (como el cambio de contraseña) nunca se borran a media captura.
   setInterval(function () {
     var a = document.activeElement;
     var escribiendo = a && ['INPUT', 'SELECT', 'TEXTAREA'].indexOf(a.tagName) !== -1;
@@ -356,7 +353,7 @@ LOGIN = """
       <input type="password" name="clave" placeholder="Contraseña" required>
       <button type="submit">Iniciar sesión</button>
     </form>
-    <footer>Acceso autenticado con JWT · expira en {{ TOKEN_MIN }} min</footer>
+    <footer>Sesión válida por {{ TOKEN_MIN }} minutos</footer>
   </div>
 </body>
 </html>
@@ -370,7 +367,7 @@ def render(vista, titulo, contenido):
 
 def tabla(filas, columnas, formato=None):
     if not filas:
-        return '<div class="vacio">Sin registros todavía — corre seed_demo.py para datos de prueba.</div>'
+        return '<div class="vacio">Sin registros todavía.</div>'
     formato = formato or {}
     ths = "".join(f"<th>{t}</th>" for _, t in columnas)
     trs = ""

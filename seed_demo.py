@@ -1,7 +1,3 @@
-"""
-Simula eventos reales de Ouroboros IDS para verificar el dashboard.
-Uso: python seed_demo.py
-"""
 import sqlite3
 import sys
 from datetime import datetime, timedelta

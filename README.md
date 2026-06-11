@@ -22,7 +22,7 @@ sudo dnf install libpcap-devel git python3
 ### 2. Clonar e instalar
 
 ```bash
-git clone https://github.com/usuario/ouroboros-ids.git
+git clone https://github.com/DiegoS542/ouroboros-ids.git
 cd ouroboros-ids
 python -m venv venv
 source venv/bin/activate
@@ -57,6 +57,22 @@ Al primer arranque se genera una contraseña aleatoria para el dashboard. Cámbi
 ### Dashboard web
 
 Disponible en `http://localhost:5000` mientras el IDS esté corriendo.
+
+---
+
+## Datos de prueba
+
+Para revisar el dashboard sin necesidad de tráfico real de red:
+
+```bash
+# Primera vez ejecutando el IDS
+python seed_demo.py
+
+# Dspués de ejevutar el IDS
+sudo python seed_demo.py
+```
+
+Inserta dispositivos, alertas whitelist, conexiones a IPs peligrosas con análisis forense completo y bitácora DNS. Después abre `http://localhost:5000` y revisa cada sección.
 
 ---
 
