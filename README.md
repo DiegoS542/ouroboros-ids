@@ -68,7 +68,7 @@ Para revisar el dashboard sin necesidad de tráfico real de red:
 # Primera vez ejecutando el IDS
 python seed_demo.py
 
-# Dspués de ejevutar el IDS
+# Dspués de ejecutar el IDS
 sudo python seed_demo.py
 ```
 
